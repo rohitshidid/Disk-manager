@@ -5,7 +5,8 @@ import {
   APP_DIR, QUARANTINE_DIR, MANIFEST_PATH, uid, nowIso, shQuote, canonical,
 } from './util.js';
 import { runElevated } from './elevate.js';
-import { assess, sameVolume } from './safety.js';
+import { screenTargets, sameVolume } from './safety.js';
+import { trashPaths } from './dispose.js';
 
 const EMPTY = { version: 1, entries: {}, undoStack: [], redoStack: [] };
 
@@ -109,29 +110,10 @@ export class Quarantine {
     const moves = [];
     const entries = [];
 
-    // Moving a parent takes its children with it, so a nested target would
-    // just fail as "no longer exists". Keep the outermost of each chain.
-    const ordered = [...targets].sort((a, b) => a.realPath.length - b.realPath.length);
-    const kept = [];
-    for (const t of ordered) {
-      if (kept.some((k) => t.realPath.startsWith(k.realPath + '/'))) continue;
-      kept.push(t);
-    }
+    const screened = screenTargets(targets, { force });
+    rejected.push(...screened.rejected);
 
-    for (const t of kept) {
-      const verdict = assess(t.realPath, { size: t.dsize, items: t.items });
-      if (verdict.level === 'blocked') {
-        rejected.push({ path: canonical(t.realPath), reason: verdict.reason });
-        continue;
-      }
-      if ((verdict.level === 'danger' || verdict.level === 'caution') && !force) {
-        rejected.push({ path: canonical(t.realPath), reason: 'Needs confirmation.', confirm: verdict.confirm, level: verdict.level });
-        continue;
-      }
-      if (!fsSync.existsSync(t.realPath)) {
-        rejected.push({ path: canonical(t.realPath), reason: 'No longer exists on disk (the scan may be stale).' });
-        continue;
-      }
+    for (const t of screened.kept) {
       if (!sameVolume(path.dirname(t.realPath), QUARANTINE_DIR)) {
         rejected.push({ path: canonical(t.realPath), reason: 'On a different volume than the quarantine folder, so it cannot be moved instantly. Delete it from that volume directly.' });
         continue;
@@ -266,6 +248,44 @@ export class Quarantine {
     return { restored, failed };
   }
 
+  /**
+   * Hand quarantined items over to the macOS Trash.
+   *
+   * The item leaves this app's custody: undo and restore stop applying, and
+   * Finder's "Put Back" takes over. That is the point -- it is how you get
+   * something out of an app-private folder and into the one place on the Mac
+   * you already know how to empty.
+   */
+  async trash(ids) {
+    const targets = (ids?.length ? ids : this.live().map((e) => e.id))
+      .map((id) => this.state.entries[id])
+      .filter((e) => e && e.state === 'quarantined');
+    if (!targets.length) return { ok: false, message: 'Nothing to move to the Trash.', ...this.summary() };
+
+    const results = await trashPaths(targets.map((e) => e.quarantinePath));
+    const trashed = [];
+    const failed = [];
+    for (const [i, e] of targets.entries()) {
+      if (!results[i]) { failed.push({ path: e.displayPath, reason: 'macOS refused to move this to the Trash.' }); continue; }
+      e.state = 'trashed';
+      e.trashedAt = nowIso();
+      this._detach(e.id);
+      trashed.push(e);
+      // The holder is now an empty wrapper directory; the item itself is safe
+      // in the Trash, so dropping it loses nothing.
+      await fs.rm(e.holder, { recursive: true, force: true }).catch(() => {});
+    }
+    await this.save();
+    return {
+      ok: trashed.length > 0,
+      trashed: trashed.map((e) => e.displayPath),
+      realPaths: trashed.map((e) => e.realPath),
+      bytes: trashed.reduce((a, e) => a + (e.dsize || 0), 0),
+      failed,
+      ...this.summary(),
+    };
+  }
+
   /** The only irreversible action in the app. */
   async purge(ids) {
     const targets = (ids?.length ? ids : this.live().map((e) => e.id))
@@ -289,7 +309,7 @@ export class Quarantine {
       this._detach(e.id);
     }
     await this.save();
-    return { ok: true, purged: targets.length, freed, ...this.summary() };
+    return { ok: true, purged: targets.length, freed, realPaths: targets.map((e) => e.realPath), ...this.summary() };
   }
 }
 

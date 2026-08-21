@@ -2,7 +2,7 @@
 
 A visual disk-usage explorer for macOS. It scans your disk with `ncdu`, shows
 where the space actually went, and lets you delete things **reversibly** —
-every deletion can be undone, and nothing is erased until you explicitly purge.
+nothing is erased unless you ask for it in so many words.
 
 ```
 npm start          # then open http://127.0.0.1:4173
@@ -26,9 +26,31 @@ you actually care about. This app scans `/System/Volumes/Data` instead and
 displays paths in their familiar form: you see `/Users/you/Downloads`, not
 `/System/Volumes/Data/Users/you/Downloads`.
 
-## How deletion works
+## Three ways to remove something
 
-Nothing is unlinked when you press Delete. The item is **renamed** into a
+Every list in the app offers the same three actions, and they differ only in
+who ends up holding the file:
+
+| Action | Where it goes | How to get it back | When the space returns |
+|---|---|---|---|
+| **Move to bin** | this app's quarantine | ⌘Z, or Restore in the Bin tab | on Purge |
+| **Move to Trash** | the macOS Trash | Finder's "Put Back" | when you empty the Trash |
+| **Delete permanently** | nowhere | you don't | immediately |
+
+Only the third one unlinks anything, and it is gated behind typing `DELETE`.
+
+**Move to Trash** is the one to reach for if you would rather review things in
+Finder than in here. It uses the system's own `NSFileManager -trashItemAtURL:`,
+not a hand-rolled `mv` into `~/.Trash`, which matters more than it sounds: the
+system picks the right trash for files on other volumes
+(`/Volumes/X/.Trashes/<uid>`), resolves name collisions the way Finder expects,
+and records where the file came from so "Put Back" actually works. Because it
+is not restricted to one volume, it is currently the only way to clean an
+external drive.
+
+## How the bin works
+
+Nothing is unlinked when you press "Move to bin". The item is **renamed** into a
 quarantine folder on the same volume:
 
 ```
@@ -102,11 +124,20 @@ can't be duplicates), then a 64 KB head hash, then a full hash only for what
 still collides — so a same-size-but-different file is rejected after one small
 read. Largest potential savings are processed first.
 
+Each set pre-selects every copy except the **oldest**, on the assumption that
+the earliest-modified file is the original and the rest were copied from it.
+**Quick Delete Duplicates** applies that to every set at once and sends the
+copies to the macOS Trash — one confirmation for the whole run, showing which
+file each set keeps. Removed copies disappear from the list without a rescan,
+and a set that drops to a single remaining copy stops being listed at all.
+
 > APFS can store two files sharing the same blocks (a clone). Deleting one of
 > those frees nothing, so the figure here is an upper bound.
 
 **Bin** — everything currently quarantined, with its original path, size and
-deletion time. Restore or purge individually or in bulk.
+deletion time. Restore, move to the macOS Trash, or purge — individually or in
+bulk. Moving a bin item to the Trash is a handover: it leaves the bin, drops out
+of the undo history and out of the reclaim total, and Finder takes over.
 
 ## When a scan gets stuck (read this one)
 

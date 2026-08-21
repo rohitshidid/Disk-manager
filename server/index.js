@@ -9,6 +9,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { Scanner, ncduOpenDir, findBlockedChild, isPrivacyProtected, surveyBlockers } from './scanner.js';
 import { Quarantine } from './quarantine.js';
 import { DupeFinder } from './dupes.js';
+import { trashMany, eraseMany } from './dispose.js';
 import { findJunk } from './junk.js';
 import { assess } from './safety.js';
 import { F_ERR } from './tree.js';
@@ -81,6 +82,10 @@ const scanner = new Scanner();
 const dupes = new DupeFinder();
 const quarantine = await new Quarantine().init();
 const markedNodes = new Set();
+/** Nodes whose file is gone for good as far as this app is concerned -- moved
+ *  to the macOS Trash or erased outright. Unlike quarantined nodes these can
+ *  never come back on their own, so syncTree() must not un-mark them. */
+const goneNodes = new Set();
 let scanPromise = null;
 let lastSweep = [];
 
@@ -99,7 +104,7 @@ function json(res, code, body) {
 function syncTree() {
   const tree = scanner.tree;
   if (!tree) return;
-  const desired = new Set();
+  const desired = new Set(goneNodes);
   for (const e of quarantine.live()) {
     const idx = tree.findByPath(e.realPath);
     if (idx > 0) desired.add(idx);
@@ -110,6 +115,20 @@ function syncTree() {
   for (const idx of desired) {
     if (!markedNodes.has(idx)) { tree.markDeleted(idx, true); markedNodes.add(idx); }
   }
+}
+
+/** Record that these paths have left the disk, so the tree stops counting
+ *  them. Their bytes are already back -- unlike a quarantined item, there is
+ *  nothing left to purge. */
+function markGone(realPaths) {
+  const tree = scanner.tree;
+  if (tree) {
+    for (const p of realPaths) {
+      const idx = tree.findByPath(p);
+      if (idx > 0) goneNodes.add(idx);
+    }
+  }
+  syncTree();
 }
 
 function nodeView(tree, idx, parentSize) {
@@ -241,6 +260,7 @@ const routes = {
     if (scanner.status === 'scanning') return json(res, 409, { error: 'A scan is already running.' });
     const root = body.root || DATA_VOLUME;
     markedNodes.clear();
+    goneNodes.clear();
     scanPromise = scanner
       .start({ root, elevated: !!body.elevated, excludes: loadExcludes() })
       .then(() => { syncTree(); })
@@ -250,6 +270,7 @@ const routes = {
 
   'POST /api/scan/cached': async (_req, res) => {
     markedNodes.clear();
+    goneNodes.clear();
     await scanner.loadCached();
     syncTree();
     json(res, 200, await baseState());
@@ -280,6 +301,7 @@ const routes = {
         await new Promise((r) => setTimeout(r, 500));
       }
       markedNodes.clear();
+      goneNodes.clear();
       scanPromise = scanner
         .start({ root: body.root || DATA_VOLUME, elevated: !!body.elevated, excludes: list })
         .then(() => { syncTree(); })
@@ -427,6 +449,44 @@ const routes = {
     json(res, 200, { ...result, rejected: [...result.rejected, ...unknown], state: await baseState() });
   },
 
+  /**
+   * Move a batch to the macOS Trash.
+   *
+   * Unlike /api/delete this does not stage anything in the quarantine: the
+   * items go straight to Finder's Trash, which is where the user expects to
+   * find and empty them. There is no undo on this side of the handover, so the
+   * bytes are already reclaimed and nothing is added to the purge total.
+   */
+  'POST /api/trash': async (req, res, body) => {
+    const { targets, unknown } = resolveTargets(body.paths || []);
+    const result = await trashMany(targets, { force: !!body.force });
+    markGone(result.moved.map((m) => m.realPath));
+    json(res, 200, {
+      moved: result.moved.map((m) => m.path), bytes: result.bytes,
+      rejected: [...result.rejected, ...unknown], state: await baseState(),
+    });
+  },
+
+  /** Erase a batch outright — no Trash, no bin. Irreversible. */
+  'POST /api/erase': async (req, res, body) => {
+    const { targets, unknown } = resolveTargets(body.paths || []);
+    const result = await eraseMany(targets, { force: !!body.force });
+    markGone(result.erased.map((m) => m.realPath));
+    json(res, 200, {
+      erased: result.erased.map((m) => m.path), bytes: result.bytes,
+      rejected: [...result.rejected, ...unknown], state: await baseState(),
+    });
+  },
+
+  /** Hand bin items over to the macOS Trash — they leave this app's custody. */
+  'POST /api/bin/trash': async (req, res, body) => {
+    const r = await quarantine.trash(body.ids || []);
+    // These leave quarantine.live(), so without this syncTree() would decide
+    // they were never deleted and hand their bytes back to the tree totals.
+    markGone(r.realPaths || []);
+    json(res, 200, { ...r, state: await baseState() });
+  },
+
   'POST /api/undo': async (_req, res) => {
     const r = await quarantine.undo();
     syncTree();
@@ -444,7 +504,7 @@ const routes = {
   },
   'POST /api/purge': async (req, res, body) => {
     const r = await quarantine.purge(body.ids || []);
-    syncTree();
+    markGone(r.realPaths || []);
     json(res, 200, { ...r, state: await baseState() });
   },
 

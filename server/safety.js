@@ -72,3 +72,40 @@ export function sameVolume(a, b) {
     return false;
   }
 }
+
+/**
+ * Screen a batch of removal targets before anything touches the disk.
+ *
+ * Shared by all three removal paths -- quarantine, macOS Trash and permanent
+ * erase -- so a path one of them refuses is refused by every one of them.
+ * Nesting is collapsed here too: moving or erasing a parent takes its children
+ * with it, so a nested target would only fail later as "no longer exists".
+ */
+export function screenTargets(targets, { force = false } = {}) {
+  const rejected = [];
+  const ordered = [...targets].sort((a, b) => a.realPath.length - b.realPath.length);
+  const outermost = [];
+  for (const t of ordered) {
+    if (outermost.some((k) => t.realPath.startsWith(k.realPath + '/'))) continue;
+    outermost.push(t);
+  }
+
+  const kept = [];
+  for (const t of outermost) {
+    const verdict = assess(t.realPath, { size: t.dsize, items: t.items });
+    if (verdict.level === 'blocked') {
+      rejected.push({ path: canonical(t.realPath), reason: verdict.reason });
+      continue;
+    }
+    if ((verdict.level === 'danger' || verdict.level === 'caution') && !force) {
+      rejected.push({ path: canonical(t.realPath), reason: 'Needs confirmation.', confirm: verdict.confirm, level: verdict.level });
+      continue;
+    }
+    if (!fs.existsSync(t.realPath)) {
+      rejected.push({ path: canonical(t.realPath), reason: 'No longer exists on disk (the scan may be stale).' });
+      continue;
+    }
+    kept.push(t);
+  }
+  return { kept, rejected };
+}

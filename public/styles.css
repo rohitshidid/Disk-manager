@@ -85,6 +85,10 @@ button, input, select { font: inherit; color: inherit; }
 .btn.danger:hover:not(:disabled) { filter: brightness(1.08); background: var(--danger); }
 .btn.danger-outline { border-color: var(--danger); color: var(--danger); background: transparent; }
 .btn.danger-outline:hover:not(:disabled) { background: var(--danger-soft); }
+/* Move to Trash sits between "bin it" and "erase it": recoverable, but it
+   leaves this app for Finder. Warn-coloured rather than danger-red. */
+.btn.trash-outline { border-color: var(--warn); color: var(--warn); background: transparent; }
+.btn.trash-outline:hover:not(:disabled) { background: var(--warn); color: #fff; }
 
 /* ---------- scan progress ---------- */
 .scanbar {
@@ -181,12 +185,17 @@ main { flex: 1; overflow: hidden; display: flex; }
 .c-items, .c-date { text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .c-bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .c-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
-.row .del {
+.row-actions {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-  opacity: 0; border: 0; background: var(--danger); color: #fff;
-  border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+  display: flex; gap: 4px; opacity: 0;
 }
-.row:hover .del { opacity: 1; }
+.row:hover .row-actions { opacity: 1; }
+.row-actions button {
+  border: 0; color: #fff; border-radius: 6px;
+  padding: 2px 8px; font-size: 12px; cursor: pointer;
+}
+.row-actions .del { background: var(--danger); }
+.row-actions .trash { background: var(--warn); }
 .unreadable { color: var(--warn); font-size: 11px; }
 .note { padding: 10px 14px; color: var(--muted); font-size: 12.5px; }
 
@@ -245,7 +254,8 @@ main { flex: 1; overflow: hidden; display: flex; }
 .junk-item:last-child, .dupe-file:last-child, .bin-row:last-child { border-bottom: 0; }
 .path { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .sz { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.dupe-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.dupe-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.keeper { color: var(--safe); font-size: 11px; white-space: nowrap; }
 .dupe-head strong { font-variant-numeric: tabular-nums; }
 
 /* ---------- status bar ---------- */

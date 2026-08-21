@@ -84,6 +84,7 @@ const state = {
   searchMode: false,
   selected: new Set(),
   binSelected: new Set(),
+  dupeResults: null,
   tab: 'explore',
   pollTimer: null,
 };
@@ -106,6 +107,7 @@ function renderStatus() {
   $('purgeFooter').disabled = q.reclaimable.count === 0;
   $('purgeSel').disabled = state.binSelected.size === 0;
   $('restoreSel').disabled = state.binSelected.size === 0;
+  $('trashSel').disabled = state.binSelected.size === 0;
   $('purgeAll').disabled = q.reclaimable.count === 0;
 
   if (disk) {
@@ -351,7 +353,10 @@ function renderRows(children, parentSize, truncated = 0) {
       <span class="c-items">${c.isDir ? c.items.toLocaleString() : ''}</span>
       <span class="c-date">${fmtDate(c.mtime)}</span>
       <span class="c-date">${fmtDate(c.atime)}</span>
-      <button class="del" title="Move to bin">Delete</button>`;
+      <span class="row-actions">
+        <button class="trash" title="Move to the macOS Trash">Trash</button>
+        <button class="del" title="Move to Disk Manager's bin (undoable with ⌘Z)">Bin</button>
+      </span>`;
 
     row.querySelector('input').onchange = (e) => {
       if (e.target.checked) state.selected.add(c.path); else state.selected.delete(c.path);
@@ -359,7 +364,8 @@ function renderRows(children, parentSize, truncated = 0) {
       renderSelectionBar();
     };
     if (c.isDir) row.querySelector('.c-name').onclick = () => openDir(c.path);
-    row.querySelector('.del').onclick = (e) => { e.stopPropagation(); requestDelete([c.path]); };
+    row.querySelector('.del').onclick = (e) => { e.stopPropagation(); requestRemoval([c.path], 'bin'); };
+    row.querySelector('.trash').onclick = (e) => { e.stopPropagation(); requestRemoval([c.path], 'trash'); };
     frag.append(row);
   }
   el.append(frag);
@@ -372,10 +378,15 @@ function renderRows(children, parentSize, truncated = 0) {
 }
 
 function renderSelectionBar() {
-  const btn = $('deleteSelected');
   const n = state.selected.size;
-  btn.classList.toggle('hidden', n === 0);
-  btn.textContent = `Delete ${n} selected`;
+  for (const [id, label] of [
+    ['trashSelected', `Move ${n} to Trash`],
+    ['deleteSelected', `Move ${n} to bin`],
+    ['eraseSelected', `Delete ${n} permanently…`],
+  ]) {
+    $(id).classList.toggle('hidden', n === 0);
+    $(id).textContent = label;
+  }
 }
 
 const PALETTE = ['#4c78a8', '#72b7b2', '#54a24b', '#eeca3b', '#f58518', '#e45756', '#b279a2', '#9d755d', '#7f7f7f', '#6a9ec5'];
@@ -429,10 +440,66 @@ async function runSearch() {
   } catch (err) { toast(err.message, 'err'); }
 }
 
-/* ---------------------------------------------------------------- delete */
+/* --------------------------------------------------------------- removal */
 
-async function requestDelete(paths) {
-  if (!paths.length) return;
+/**
+ * The three ways an item can leave, and how each one describes itself.
+ *
+ *   bin    renamed into this app's own quarantine — instant at any size,
+ *          undoable with ⌘Z, and the space returns only when you purge
+ *   trash  handed to the macOS Trash — Finder owns it from then on, "Put
+ *          Back" is the undo, and you empty it yourself
+ *   erase  unlinked outright — no bin, no Trash, nothing to restore, so this
+ *          one always demands the typed confirmation however small the target
+ */
+const REMOVALS = {
+  bin: {
+    endpoint: '/api/delete',
+    title: 'Move to bin',
+    ok: (n) => `Move ${n} item(s) to bin`,
+    lede: (n, sz) => `<p>Moving <strong>${n}</strong> item(s) — <strong>${sz}</strong> — to the bin.
+      Nothing is erased; you can undo this or restore from the bin.</p>`,
+    result: (r) => r.moved,
+    done: (n, sz) => `Moved ${n} item(s) to the bin — ${sz} will be freed on purge`,
+    alwaysTyped: false,
+    alwaysConfirm: false,
+  },
+  trash: {
+    endpoint: '/api/trash',
+    title: 'Move to Trash',
+    ok: (n) => `Move ${n} item(s) to Trash`,
+    lede: (n, sz) => `<p>Moving <strong>${n}</strong> item(s) — <strong>${sz}</strong> — to the macOS Trash.
+      Nothing is erased: they sit in the Trash until you empty it in Finder, and Finder’s
+      “Put Back” returns them where they came from.</p>`,
+    result: (r) => r.moved,
+    done: (n, sz) => `Moved ${n} item(s) to the Trash — ${sz}. Empty the Trash in Finder to get the space back.`,
+    alwaysTyped: false,
+    alwaysConfirm: false,
+  },
+  erase: {
+    endpoint: '/api/erase',
+    title: 'Permanently erase?',
+    ok: (n) => `Erase ${n} item(s)`,
+    lede: (n, sz) => `<div class="warnbox"><strong>This cannot be undone.</strong>
+      These <strong>${n}</strong> item(s) — <strong>${sz}</strong> — skip both the bin and the
+      Trash. There is nothing to restore afterwards.</div>`,
+    result: (r) => r.erased,
+    done: (n, sz) => `Erased ${n} item(s) — ${sz} freed`,
+    alwaysTyped: true,
+    alwaysConfirm: true,
+  },
+};
+
+/**
+ * Ask the server what a batch is worth removing, confirm it, then remove it.
+ *
+ * `mode` picks one of REMOVALS. `preamble` lets a caller that already has a
+ * better explanation than "N items" — Quick Delete Duplicates, say — put it at
+ * the top of the same dialog, so the user still confirms exactly once.
+ */
+async function requestRemoval(paths, mode = 'bin', { preamble = '' } = {}) {
+  const spec = REMOVALS[mode];
+  if (!paths.length || !spec) return;
   try {
     const a = await api('/api/assess', { method: 'POST', body: { paths } });
     const blocked = a.verdicts.filter((v) => v.level === 'blocked');
@@ -440,7 +507,7 @@ async function requestDelete(paths) {
 
     if (!allowed.length) {
       await confirmDlg({
-        title: 'Cannot delete',
+        title: 'Cannot remove these',
         html: blocked.map((b) => `<div class="warnbox"><strong>${esc(b.path)}</strong><br>${esc(b.reason)}</div>`).join(''),
         okLabel: 'OK',
       });
@@ -452,29 +519,41 @@ async function requestDelete(paths) {
     const reasons = [...new Set(allowed.flatMap((v) => v.confirm))];
     const total = allowed.reduce((s, v) => s + v.size, 0);
 
-    if (worst !== 'ok' || allowed.length > 1) {
+    if (spec.alwaysConfirm || worst !== 'ok' || allowed.length > 1) {
       const html = `
-        <p>Moving <strong>${allowed.length}</strong> item(s) — <strong>${fmt(total)}</strong> — to the bin.
-        Nothing is erased; you can undo this or restore from the bin.</p>
+        ${preamble}
+        ${spec.lede(allowed.length, fmt(total))}
         ${blocked.length ? `<div class="warnbox">${blocked.length} item(s) will be skipped because they are protected.</div>` : ''}
         ${reasons.length ? `<ul>${reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
         <div class="target-list">${allowed.slice(0, 60).map((v) => `<div>${esc(v.path)} — ${fmt(v.size)}</div>`).join('')}</div>`;
       const ok = await confirmDlg({
-        title: worst === 'danger' ? 'This is outside your home folder' : 'Move to bin',
-        html, okLabel: `Move ${allowed.length} item(s) to bin`, typed: worst === 'danger',
+        title: worst === 'danger' && !spec.alwaysTyped ? 'This is outside your home folder' : spec.title,
+        html,
+        okLabel: spec.ok(allowed.length),
+        typed: spec.alwaysTyped || worst === 'danger',
       });
       if (!ok) return;
     }
 
-    const r = await api('/api/delete', { method: 'POST', body: { paths: allowed.map((v) => v.path), force: true } });
+    const r = await api(spec.endpoint, { method: 'POST', body: { paths: allowed.map((v) => v.path), force: true } });
     state.server = r.state;
     state.selected.clear();
     renderStatus();
-    if (r.moved.length) toast(`Moved ${r.moved.length} item(s) to the bin — ${fmt(total)} will be freed on purge`, 'ok');
+
+    const done = spec.result(r) || [];
+    if (done.length) toast(spec.done(done.length, fmt(r.bytes ?? total)), 'ok');
     for (const rj of r.rejected) toast(`${rj.path}: ${rj.reason}`, 'err');
+
+    // The duplicate list is a snapshot of a finished hash run, not something
+    // the server re-derives. Drop what just left rather than making the user
+    // rescan to stop seeing files that are no longer there.
+    if (done.length && state.dupeResults) pruneDupes(done);
     await reloadCurrent();
+    if (state.tab === 'bin') renderBin();
   } catch (err) { toast(err.message, 'err'); }
 }
+
+const requestDelete = (paths) => requestRemoval(paths, 'bin');
 
 async function reloadCurrent() {
   if (state.searchMode) return runSearch();
@@ -530,6 +609,7 @@ function renderBin() {
         <span class="sz">${fmt(e.dsize)}</span>
         <span class="sz" style="color:var(--muted);font-size:12px">${new Date(e.deletedAt).toLocaleString()}</span>
         <button class="btn small restore">Restore</button>
+        <button class="btn small trash-outline to-trash" title="Hand this to the macOS Trash">Trash</button>
       </div>`;
     d.querySelector('input').onchange = (ev) => {
       if (ev.target.checked) state.binSelected.add(e.id); else state.binSelected.delete(e.id);
@@ -544,9 +624,44 @@ function renderBin() {
         toast(r.ok ? `Restored ${e.name}` : (r.failed?.[0]?.reason || 'Restore failed'), r.ok ? 'ok' : 'err');
       } catch (err) { toast(err.message, 'err'); }
     };
+    d.querySelector('.to-trash').onclick = () => binTrash([e.id]);
     el.append(d);
   }
   renderStatus();
+}
+
+/**
+ * Move quarantined items into the macOS Trash.
+ *
+ * This is a handover, not a deletion: the item stops being this app's problem,
+ * so it drops out of the bin, out of the undo history and out of the reclaim
+ * total, and Finder's "Put Back" becomes the way to get it back.
+ */
+async function binTrash(ids) {
+  if (!ids.length) return;
+  const q = state.server.quarantine;
+  const targets = q.entries.filter((e) => ids.includes(e.id));
+  if (!targets.length) return;
+  const bytes = targets.reduce((a, e) => a + e.dsize, 0);
+  const ok = await confirmDlg({
+    title: 'Move to Trash',
+    html: `
+      <p>Handing <strong>${targets.length}</strong> item(s) — <strong>${fmt(bytes)}</strong> — to the
+      macOS Trash. Nothing is erased, but they leave this bin: Undo and Restore stop applying and
+      Finder’s “Put Back” takes over.</p>
+      <div class="target-list">${targets.slice(0, 60).map((e) => `<div>${esc(e.path)} — ${fmt(e.dsize)}</div>`).join('')}</div>`,
+    okLabel: `Move ${targets.length} item(s) to Trash`,
+  });
+  if (!ok) return;
+  try {
+    const r = await api('/api/bin/trash', { method: 'POST', body: { ids } });
+    state.server = r.state;
+    state.binSelected.clear();
+    renderBin(); renderStatus(); reloadCurrent();
+    if (r.ok) toast(`Moved ${r.trashed.length} item(s) to the Trash — ${fmt(r.bytes)}. Empty the Trash in Finder to get the space back.`, 'ok');
+    else toast(r.message || 'Nothing was moved to the Trash.', 'err');
+    for (const f of r.failed || []) toast(`${f.path}: ${f.reason}`, 'err');
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 async function doPurge(ids) {
@@ -592,7 +707,8 @@ async function loadJunk() {
           <span class="risk ${cat.risk}">${cat.risk}</span>
           <span style="color:var(--muted);font-size:12px">${cat.count} location(s)</span>
           <span class="junk-size">${fmt(cat.size)}</span>
-          <button class="btn small danger-outline">Move all to bin</button>
+          <button class="btn small trash-outline j-trash">Move all to Trash</button>
+          <button class="btn small danger-outline j-bin">Move all to bin</button>
         </div>
         <div class="junk-why">${esc(cat.why)}</div>
         <div class="junk-items hidden">
@@ -603,10 +719,12 @@ async function loadJunk() {
         if (e.target.tagName === 'BUTTON') return;
         items.classList.toggle('hidden');
       };
-      d.querySelector('button').onclick = (e) => {
-        e.stopPropagation();
-        requestDelete(cat.items.map((i) => i.path));
-      };
+      for (const [sel, mode] of [['.j-trash', 'trash'], ['.j-bin', 'bin']]) {
+        d.querySelector(sel).onclick = (e) => {
+          e.stopPropagation();
+          requestRemoval(cat.items.map((i) => i.path), mode);
+        };
+      }
       el.append(d);
     }
   } catch (err) {
@@ -643,12 +761,63 @@ async function pollDupes() {
   $('dupeStatus').textContent = d.results.length
     ? `${d.results.length} duplicate set(s) — up to ${fmt(d.wasted)} recoverable${d.phase === 'budget-reached' ? ' (stopped at the hashing budget)' : ''}`
     : 'No duplicates found.';
+  state.dupeResults = d.results;
   renderDupes(d.results);
+}
+
+/** Which copy in a set to keep: the oldest, which is most likely the original
+ *  the others were copied from. A file with no usable mtime sorts last, so it
+ *  is never picked as the keeper by accident. */
+function oldestFirst(files) {
+  return [...files].sort((a, b) => (a.mtime || Infinity) - (b.mtime || Infinity));
+}
+
+/** Drop files that have just been removed, and any set that is no longer a
+ *  duplicate set because only one copy is left. */
+function pruneDupes(removed) {
+  const gone = new Set(removed);
+  state.dupeResults = (state.dupeResults || [])
+    .map((g) => ({ ...g, files: g.files.filter((f) => !gone.has(f.path)) }))
+    .filter((g) => g.files.length > 1);
+  const left = state.dupeResults;
+  $('dupeStatus').textContent = left.length
+    ? `${left.length} duplicate set(s) left — up to ${fmt(left.reduce((a, g) => a + g.size * (g.files.length - 1), 0))} recoverable`
+    : 'No duplicate sets left.';
+  renderDupes(left);
+}
+
+/**
+ * Clear out every duplicate in one go.
+ *
+ * Keeps the oldest copy of each set and sends the rest to the macOS Trash.
+ * The confirmation is `requestRemoval`'s own, with the keep/remove split
+ * explained on top, so this is one dialog rather than two.
+ */
+async function quickDeleteDupes() {
+  const groups = state.dupeResults || [];
+  if (!groups.length) { toast('Find duplicates first.', 'err'); return; }
+
+  const doomed = [];
+  const keepers = [];
+  for (const g of groups) {
+    const [keep, ...rest] = oldestFirst(g.files);
+    keepers.push(keep);
+    doomed.push(...rest.map((f) => f.path));
+  }
+  if (!doomed.length) { toast('Every set already has only one copy.', 'err'); return; }
+
+  await requestRemoval(doomed, 'trash', {
+    preamble: `<p>Keeping the oldest copy in each of <strong>${groups.length}</strong> duplicate
+      set(s) and removing the other <strong>${doomed.length}</strong> file(s).</p>
+      <p style="color:var(--muted)">Kept, one per set:</p>
+      <div class="target-list">${keepers.slice(0, 60).map((f) => `<div>${esc(f.path)}</div>`).join('')}</div>`,
+  });
 }
 
 function renderDupes(groups) {
   const el = $('dupeList');
   el.innerHTML = '';
+  $('dupeBulk').style.display = groups.length ? 'flex' : 'none';
   if (!groups.length) { el.innerHTML = '<div class="empty">No duplicate files found.</div>'; return; }
   for (const g of groups) {
     const d = document.createElement('div');
@@ -658,15 +827,24 @@ function renderDupes(groups) {
         <strong>${fmt(g.size)}</strong> each · ${g.files.length} copies ·
         <span style="color:var(--safe)">${fmt(g.wasted)} recoverable</span>
         <span class="spacer" style="flex:1"></span>
-        <button class="btn small danger-outline">Keep the first, bin the rest</button>
+        <button class="btn small trash-outline g-trash">Move selected to Trash</button>
+        <button class="btn small danger-outline g-bin">Move selected to bin</button>
       </div>
-      ${g.files.map((f, i) => `<div class="dupe-file"><input type="checkbox" ${i === 0 ? '' : 'checked'}><span class="path">${esc(f.path)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(f.mtime)}</span></div>`).join('')}`;
-    d.querySelector('button').onclick = () => {
-      const boxes = [...d.querySelectorAll('.dupe-file input')];
-      const paths = g.files.filter((_, i) => boxes[i].checked).map((f) => f.path);
-      if (paths.length === g.files.length) { toast('Leave at least one copy unchecked.', 'err'); return; }
-      requestDelete(paths);
-    };
+      ${(() => {
+        // Pre-tick everything except the oldest copy, so the default matches
+        // what Quick Delete Duplicates would do.
+        const keep = oldestFirst(g.files)[0];
+        return g.files.map((f) => `<div class="dupe-file"><input type="checkbox" ${f === keep ? '' : 'checked'}><span class="path">${esc(f.path)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(f.mtime)}</span>${f === keep ? '<span class="keeper">oldest — kept</span>' : ''}</div>`).join('');
+      })()}`;
+    for (const [sel, mode] of [['.g-trash', 'trash'], ['.g-bin', 'bin']]) {
+      d.querySelector(sel).onclick = () => {
+        const boxes = [...d.querySelectorAll('.dupe-file input')];
+        const paths = g.files.filter((_, i) => boxes[i].checked).map((f) => f.path);
+        if (!paths.length) { toast('Tick the copies you want to remove.', 'err'); return; }
+        if (paths.length === g.files.length) { toast('Leave at least one copy unchecked.', 'err'); return; }
+        requestRemoval(paths, mode);
+      };
+    }
     el.append(d);
   }
 }
@@ -687,10 +865,13 @@ $('tabs').onclick = (e) => { if (e.target.dataset.tab) switchTab(e.target.datase
 $('scanBtn').onclick = () => startScan(false);
 $('undoBtn').onclick = doUndo;
 $('redoBtn').onclick = doRedo;
-$('deleteSelected').onclick = () => requestDelete([...state.selected]);
+$('deleteSelected').onclick = () => requestRemoval([...state.selected], 'bin');
+$('trashSelected').onclick = () => requestRemoval([...state.selected], 'trash');
+$('eraseSelected').onclick = () => requestRemoval([...state.selected], 'erase');
 $('purgeFooter').onclick = () => { switchTab('bin'); doPurge(null); };
 $('purgeAll').onclick = () => doPurge(null);
 $('purgeSel').onclick = () => doPurge([...state.binSelected]);
+$('trashSel').onclick = () => binTrash([...state.binSelected]);
 $('restoreSel').onclick = async () => {
   try {
     const r = await api('/api/restore', { method: 'POST', body: { ids: [...state.binSelected] } });
@@ -701,6 +882,7 @@ $('restoreSel').onclick = async () => {
 };
 $('junkRefresh').onclick = loadJunk;
 $('dupeStart').onclick = startDupes;
+$('dupeQuick').onclick = quickDeleteDupes;
 $('dupeCancel').onclick = () => api('/api/dupes/cancel', { method: 'POST' });
 $('search').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); };
 $('minSize').onchange = $('olderThan').onchange = () => {

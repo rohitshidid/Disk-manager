@@ -9,20 +9,21 @@ Disk manager/
 ├── README.md             user-facing guide: how it works, why, gotchas
 ├── structure.md          this file — architecture and invariants
 ├── TODO.md               backlog
-├── server/               Node backend (~1,650 lines)
-│   ├── index.js   (520)  HTTP server, routes, auth, tree↔quarantine sync
+├── server/               Node backend (~2,450 lines)
+│   ├── index.js   (580)  HTTP server, routes, auth, tree↔quarantine sync
 │   ├── scanner.js (425)  ncdu process, live tailing, stall detection
-│   ├── quarantine.js(342) delete / undo / redo / restore / purge + manifest
+│   ├── quarantine.js(362) delete / undo / redo / restore / purge + manifest
+│   ├── dispose.js  (189) macOS Trash + permanent erase
 │   ├── tree.js    (335)  TreeStore (typed arrays) + NcduParser (streaming)
 │   ├── dupes.js   (175)  duplicate finder (size → head hash → full hash)
 │   ├── junk.js    (148)  rules for caches, build artefacts, package stores
 │   ├── util.js     (76)  paths, formatting, df, shell quoting
-│   ├── safety.js   (74)  deletion blocklist and risk assessment
+│   ├── safety.js  (111)  deletion blocklist, risk assessment, batch screening
 │   └── elevate.js  (43)  one native admin prompt per batch
-└── public/               frontend, vanilla ES modules (~1,260 lines)
-    ├── app.js     (747)  all UI logic and state
-    ├── styles.css (300)  theme-aware styling, light + dark
-    ├── index.html (164)  markup shell; `__TOKEN__` is substituted at serve time
+└── public/               frontend, vanilla ES modules (~1,450 lines)
+    ├── app.js     (929)  all UI logic and state
+    ├── styles.css (310)  theme-aware styling, light + dark
+    ├── index.html (175)  markup shell; `__TOKEN__` is substituted at serve time
     └── treemap.js  (53)  squarified treemap layout
 ```
 
@@ -47,25 +48,34 @@ POST /api/scan
 The export is tailed rather than piped because an elevated child cannot stream
 through a pipe we own, and one code path serves both privileged and plain runs.
 
-### Deleting
+### Removing
+
+Three destinations share one front half. `screenTargets()` is the single gate:
+it refuses blocked paths, demands confirmation for `danger`/`caution`, drops
+targets nested inside other targets, and checks the path still exists — so a
+path one destination refuses is refused by all of them.
 
 ```
 UI selection
   └─ POST /api/assess          risk verdict per path, no side effects
-  └─ confirm dialog            typed DELETE for `danger`
-  └─ POST /api/delete
-       └─ Quarantine.deleteMany()
-            ├─ safety.assess()            blocked paths refused outright
-            ├─ drop targets nested inside other targets
-            ├─ sameVolume() check         a rename must stay on one volume
-            └─ performMoves()
-                 ├─ fs.rename() unprivileged where possible
-                 └─ one runElevated() batch for whatever returned EACCES/EPERM
-       └─ syncTree()           subtract sizes from ancestors, no rescan needed
+  └─ confirm dialog            typed DELETE for `danger`, always for erase
+  └─ POST /api/delete | /api/trash | /api/erase
+       └─ safety.screenTargets()      shared gate, see above
+       ├─ /api/delete → Quarantine.deleteMany()
+       │    ├─ sameVolume() check      a rename must stay on one volume
+       │    └─ performMoves()          fs.rename(), then one elevated batch
+       ├─ /api/trash  → dispose.trashMany()
+       │    ├─ one osascript -l JavaScript process for the whole batch
+       │    │    NSFileManager -trashItemAtURL: per path
+       │    └─ elevated `mv` into ~/.Trash for what it could not write
+       └─ /api/erase  → dispose.eraseMany()
+            └─ fs.rm(recursive), then one elevated `rm -rf` batch
+       └─ syncTree() / markGone()     subtract sizes from ancestors, no rescan
 ```
 
-Undo/redo move whole operations between `undoStack` and `redoStack`. Purge is
-the only irreversible action and clears both.
+Undo/redo move whole operations between `undoStack` and `redoStack`, and apply
+only to the quarantine — the other two destinations have left the app's
+custody. Purge and erase are the irreversible actions; purge clears both stacks.
 
 ---
 
@@ -131,6 +141,31 @@ trees, volume roots, `$HOME` itself, and any path containing the app's own
 quarantine. `danger` = outside `/Users` (typed confirmation). `caution` = over
 1 GiB or over 10,000 files.
 
+`screenTargets()` applies `assess()` to a whole batch and collapses nesting.
+Every removal path calls it, which is what keeps "the bin refuses this" and
+"the Trash refuses this" from drifting apart.
+
+### `dispose.js`
+
+The two removals that hand the item to somebody else.
+
+`trashMany()` shells out to `NSFileManager -trashItemAtURL:` through JXA rather
+than moving files into `~/.Trash` itself. Only the system API picks the correct
+per-volume trash, matches Finder's collision naming, and records the put-back
+location. One `osascript` process handles the whole batch; paths go in through a
+JSON file rather than argv, because a few thousand long paths would otherwise
+exceed `ARG_MAX`, and verdicts come back as a 0/1 per path through another file.
+
+The bridge does not carry `NSError` back usefully, so a refusal is diagnosed on
+the Node side: if the parent directory is not writable it is retried as root in
+one batch and chowned back, and anything else is reported as a refusal.
+
+`eraseMany()` is `fs.rm` with one elevated `rm -rf` batch for the leftovers.
+
+`trashPaths()` is the unscreened primitive, exported for one caller only:
+quarantined items, which `assess()` blocks by name because they live under the
+app's own directory but which the user has by definition already deleted.
+
 ### `dupes.js`
 
 Different sizes cannot be duplicates, so grouping by size discards almost
@@ -161,6 +196,9 @@ process run and substituted into `index.html` at serve time.
 | `POST`/`GET`/`POST` `/api/dupes[/cancel]` | duplicate finder |
 | `POST /api/assess` | risk verdicts, no side effects |
 | `POST /api/delete` | quarantine a batch |
+| `POST /api/trash` | move a batch to the macOS Trash |
+| `POST /api/erase` | permanently delete a batch — no bin, no Trash |
+| `POST /api/bin/trash` | hand quarantined items over to the macOS Trash |
 | `POST /api/undo` · `/api/redo` | move an operation between stacks |
 | `POST /api/restore` · `/api/purge` | per-item restore; irreversible erase |
 | `POST /api/privacy-settings` | open the Full Disk Access pane |
@@ -207,7 +245,16 @@ process run and substituted into `index.html` at serve time.
    on a later poll.
 3. **An exclude can never be at or above a volume root.** `isSkippable()`
    enforces it; otherwise every later scan silently returns nothing.
-4. **Only purge unlinks.** Every other path is a rename that can be walked back.
+4. **Only purge and `/api/erase` unlink.** Both are gated behind a typed
+   `DELETE` in the UI. Every other path is a rename that can be walked back —
+   into the quarantine, where this app can undo it, or into the macOS Trash,
+   where Finder can.
+9. **A node marked gone stays gone.** `syncTree()` reconciles marks against
+   `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
+   its bytes handed back to the tree. That is right for a restore and wrong for
+   everything else, so trash, erase and purge register the node in `goneNodes`,
+   which `syncTree()` folds into its desired set and never clears. Both sets are
+   cleared when a scan starts, because the indices belong to the old tree.
 5. **One admin prompt per batch**, never per file. The server itself never runs
    as root.
 6. **Register both path forms when excluding** — `lsof` reports firmlinked

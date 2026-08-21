@@ -90,7 +90,9 @@
   <section class="view" id="view-dupes">
     <div class="panel-intro">
       <h2>Duplicate files</h2>
-      <p>Byte-identical copies. Files are grouped by size first, then hashed, so only real candidates get read.</p>
+      <p>Byte-identical copies. Files are grouped by size first, then hashed, so only real candidates get read.
+      Nothing here is erased: copies you remove go to the macOS Trash, where Finder can put them back and you
+      empty them yourself.</p>
       <div class="row-controls">
         <label>Look inside <input id="dupeRoot" class="input" value=""></label>
         <label>Files at least
@@ -104,6 +106,10 @@
         <button id="dupeCancel" class="btn ghost hidden">Stop</button>
       </div>
       <div id="dupeStatus" class="hint"></div>
+      <div class="row-controls" id="dupeBulk" style="display:none">
+        <button id="dupeQuick" class="btn trash-outline">Quick Delete Duplicates</button>
+        <span class="hint">Keeps the oldest copy in every set — the likely original — and moves every other copy to the Trash.</span>
+      </div>
     </div>
     <p class="caveat">Note: macOS can store two files that share the same blocks (an APFS clone). Deleting one of those frees nothing — the space shown here is an upper bound.</p>
     <div id="dupeList" class="dupe-list"></div>
@@ -113,9 +119,12 @@
   <section class="view" id="view-bin">
     <div class="panel-intro">
       <h2>Bin</h2>
-      <p>Nothing here has been erased yet. Each item was moved aside on the same volume, so restoring is instant and exact. Space comes back only when you purge.</p>
+      <p>Nothing here has been erased yet. Each item was moved aside on the same volume, so restoring is instant and exact.
+      Space comes back only when you purge. Moving an item to the Trash instead hands it to Finder — it leaves this bin,
+      and “Put Back” takes over from Undo.</p>
       <div class="row-controls">
         <button id="restoreSel" class="btn" disabled>Restore selected</button>
+        <button id="trashSel" class="btn trash-outline" disabled>Move selected to Trash</button>
         <button id="purgeSel" class="btn danger" disabled>Purge selected…</button>
         <button id="purgeAll" class="btn danger" disabled>Purge everything…</button>
       </div>
@@ -141,7 +150,9 @@
     <div class="reclaim-label"><span id="reclaimCount">0</span> item(s) in bin — freed on purge</div>
   </div>
   <button id="purgeFooter" class="btn danger" disabled>Purge…</button>
-  <button id="deleteSelected" class="btn danger-outline hidden">Delete selected</button>
+  <button id="trashSelected" class="btn trash-outline hidden">Move to Trash</button>
+  <button id="deleteSelected" class="btn danger-outline hidden">Move to bin</button>
+  <button id="eraseSelected" class="btn danger hidden">Delete permanently…</button>
 </footer>
 
 <dialog id="confirmDlg" class="dlg">

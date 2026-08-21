@@ -39,7 +39,11 @@ See `structure.md` for architecture and the invariants any fix must respect.
       - hardlink dedupe (`hlnkc`) counted once
       - quarantine lifecycle: delete → undo → redo → undo → purge
       - `safety.assess()` matrix, especially the blocked cases
+      - `safety.screenTargets()` collapsing nested targets
       - `isSkippable()` refusing volume roots
+      - trash round trip: file, directory, name collision, SIP path refused
+      - `goneNodes` surviving a later `syncTree()` (a bin+undo cycle must not
+        resurrect the bytes of something already trashed)
       Run with `node --test`; no framework needed.
 
 - [ ] **Sweep results are truncated.** `MAX_SURVEY_PROBES=600` / `MAX_CONFIRMS=80`
@@ -68,15 +72,19 @@ See `structure.md` for architecture and the invariants any fix must respect.
       into the existing `TreeStore` would make the app feel live.
 - [ ] **Duplicate finder reports an upper bound.** APFS clones share blocks, so
       deleting one frees nothing. Compare `st_blocks` against apparent size to
-      flag likely clones instead of only warning in prose.
+      flag likely clones instead of only warning in prose. This matters more now
+      that Quick Delete Duplicates can clear every set in one click.
 - [ ] **Duplicate hashing is not resumable** and stops at a 60 GB budget with no
       way to continue where it left off.
 - [ ] **Hashing runs on the main thread.** Fine today (streaming I/O), but move
       SHA-256 to `worker_threads` before raising the budget.
 - [ ] **`scanPromise` is assigned and never read** in `server/index.js` — either
       await it somewhere meaningful or delete it.
-- [ ] **Cross-volume deletes are refused** rather than falling back to
-      copy → verify → unlink. External drives currently cannot be cleaned.
+- [ ] **Cross-volume deletes are refused by the bin** rather than falling back
+      to copy → verify → unlink. "Move to Trash" now handles other volumes (the
+      system picks `/Volumes/X/.Trashes/<uid>`), so an external drive can be
+      cleaned that way — but the quarantine, and therefore Undo, still cannot
+      reach it.
 
 ---
 
@@ -121,3 +129,12 @@ Kept for context — these were built and verified against real data.
       confirmation, Full Disk Access recommendation
 - [x] Cancel works for root-owned scans (sentinel-file wrapper)
 - [x] localhost-only binding, per-run token, `Host` header check
+- [x] Move to Trash in every section, via `NSFileManager -trashItemAtURL:` —
+      verified for files, directories, names with spaces and quotes, and
+      correctly refused for SIP paths
+- [x] Quick Delete Duplicates — keeps the oldest copy of each set, trashes the
+      rest, one confirmation, list pruned in place without a rescan
+- [x] Direct permanent erase (`/api/erase`) alongside the bin and the Trash,
+      gated behind a typed `DELETE`
+- [x] Hand bin items over to the macOS Trash (`/api/bin/trash`)
+- [x] Fixed: purge un-marked its nodes, so the tree handed purged bytes back

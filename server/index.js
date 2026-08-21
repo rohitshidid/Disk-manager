@@ -9,11 +9,11 @@ import { spawn, execFileSync } from 'node:child_process';
 import { Scanner, ncduOpenDir, findBlockedChild, isPrivacyProtected, surveyBlockers } from './scanner.js';
 import { Quarantine } from './quarantine.js';
 import { DupeFinder } from './dupes.js';
-import { trashMany, eraseMany } from './dispose.js';
+import { trashMany, eraseMany, USER_TRASH } from './dispose.js';
 import { findJunk } from './junk.js';
 import { assess } from './safety.js';
 import { F_ERR } from './tree.js';
-import { DATA_VOLUME, HOME, APP_DIR, canonical, underDataVolume, diskUsage, formatBytes, QUARANTINE_DIR } from './util.js';
+import { DATA_VOLUME, HOME, APP_DIR, canonical, underDataVolume, diskUsage, formatBytes, nowIso, QUARANTINE_DIR } from './util.js';
 
 /** Folders the user chose to skip because a scan wedged inside them. macOS
  *  can block openat() indefinitely on a cache whose provider is unresponsive,
@@ -86,6 +86,20 @@ const markedNodes = new Set();
  *  to the macOS Trash or erased outright. Unlike quarantined nodes these can
  *  never come back on their own, so syncTree() must not un-mark them. */
 const goneNodes = new Set();
+/**
+ * What this run has handed to the macOS Trash.
+ *
+ * Deliberately in memory only. Finder owns these files now: the user can empty
+ * the Trash, or put an item back, without telling us. A list that outlived the
+ * process would start making promises about a Trash it no longer knows
+ * anything about — so it is scoped to the session that created it, and says so.
+ */
+const trashedThisRun = [];
+function recordTrashed(items) {
+  for (const it of items) trashedThisRun.unshift({ ...it, at: nowIso() });
+  if (trashedThisRun.length > 500) trashedThisRun.length = 500;
+}
+
 let scanPromise = null;
 let lastSweep = [];
 
@@ -205,6 +219,7 @@ async function baseState() {
       ...disk,
       availAfterPurge: disk.avail + q.reclaimable.bytes,
     },
+    trashed: trashedThisRun,
     home: canonical(HOME),
     excludes: loadExcludes(),
     dataVolume: DATA_VOLUME,
@@ -461,6 +476,7 @@ const routes = {
     const { targets, unknown } = resolveTargets(body.paths || []);
     const result = await trashMany(targets, { force: !!body.force });
     markGone(result.moved.map((m) => m.realPath));
+    recordTrashed(result.moved);
     json(res, 200, {
       moved: result.moved.map((m) => m.path), bytes: result.bytes,
       rejected: [...result.rejected, ...unknown], state: await baseState(),
@@ -484,6 +500,7 @@ const routes = {
     // These leave quarantine.live(), so without this syncTree() would decide
     // they were never deleted and hand their bytes back to the tree totals.
     markGone(r.realPaths || []);
+    recordTrashed(r.moved || []);
     json(res, 200, { ...r, state: await baseState() });
   },
 
@@ -511,6 +528,12 @@ const routes = {
   /** Open the Full Disk Access pane so the user can grant consent. */
   'POST /api/privacy-settings': async (_req, res) => {
     spawn('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'], { stdio: 'ignore' }).unref();
+    json(res, 200, { ok: true });
+  },
+
+  /** Open the Trash in Finder, so the record has somewhere to point. */
+  'POST /api/open-trash': async (_req, res) => {
+    spawn('open', [USER_TRASH], { stdio: 'ignore' }).unref();
     json(res, 200, { ok: true });
   },
 

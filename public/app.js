@@ -77,6 +77,19 @@ function confirmDlg({ title, html, okLabel = 'Confirm', typed = false }) {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /**
+ * Name what an action actually touched, up to the point of being readable.
+ *
+ * A count alone ("moved 3 items") leaves the user to work out *which* three,
+ * and after the list refreshes those rows are gone. Six names is worth
+ * reading; six hundred is not, so the tail becomes a count.
+ */
+function nameList(paths, limit = 6) {
+  const names = paths.map((p) => String(p).split('/').pop());
+  if (names.length <= limit) return names.join(', ');
+  return `${names.slice(0, limit).join(', ')} + ${names.length - limit} more`;
+}
+
+/**
  * Report what the server refused.
  *
  * A privacy refusal gets a dialog rather than a toast, because unlike every
@@ -492,7 +505,7 @@ const REMOVALS = {
     lede: (n, sz) => `<p>Moving <strong>${n}</strong> item(s) — <strong>${sz}</strong> — to the bin.
       Nothing is erased; you can undo this or restore from the bin.</p>`,
     result: (r) => r.moved,
-    done: (n, sz) => `Moved ${n} item(s) to the bin — ${sz} will be freed on purge`,
+    done: (paths, sz) => `Moved to bin: ${nameList(paths)} — ${sz} will be freed on purge`,
     alwaysTyped: false,
     alwaysConfirm: false,
   },
@@ -504,7 +517,7 @@ const REMOVALS = {
       Nothing is erased: they sit in the Trash until you empty it in Finder, and Finder’s
       “Put Back” returns them where they came from.</p>`,
     result: (r) => r.moved,
-    done: (n, sz) => `Moved ${n} item(s) to the Trash — ${sz}. Empty the Trash in Finder to get the space back.`,
+    done: (paths, sz) => `Moved to Trash: ${nameList(paths)} — ${sz}. Listed under Bin › Moved to the macOS Trash.`,
     alwaysTyped: false,
     alwaysConfirm: false,
   },
@@ -516,7 +529,7 @@ const REMOVALS = {
       These <strong>${n}</strong> item(s) — <strong>${sz}</strong> — skip both the bin and the
       Trash. There is nothing to restore afterwards.</div>`,
     result: (r) => r.erased,
-    done: (n, sz) => `Erased ${n} item(s) — ${sz} freed`,
+    done: (paths, sz) => `Erased: ${nameList(paths)} — ${sz} freed`,
     alwaysTyped: true,
     alwaysConfirm: true,
   },
@@ -572,8 +585,8 @@ async function requestRemoval(paths, mode = 'bin', { preamble = '' } = {}) {
     state.selected.clear();
     renderStatus();
 
-    const done = spec.result(r) || [];
-    if (done.length) toast(spec.done(done.length, fmt(r.bytes ?? total)), 'ok');
+    const done = (spec.result(r) || []).map((m) => (typeof m === 'string' ? m : m.path));
+    if (done.length) toast(spec.done(done, fmt(r.bytes ?? total)), 'ok');
     await reportRejections(r.rejected);
 
     // The duplicate list is a snapshot of a finished hash run, not something
@@ -618,6 +631,7 @@ async function doRedo() {
 /* ------------------------------------------------------------------- bin */
 
 function renderBin() {
+  renderTrashed();
   const q = state.server?.quarantine;
   const el = $('binList');
   if (!q || !q.entries.length) {
@@ -694,6 +708,42 @@ async function binTrash(ids) {
     else toast(r.message || 'Nothing was moved to the Trash.', 'err');
     await reportRejections(r.failed);
   } catch (err) { toast(err.message, 'err'); }
+}
+
+/**
+ * Everything this session handed to the macOS Trash.
+ *
+ * The toast that announced each move is long gone by the time anyone wonders
+ * what happened, so the same information lives here until the app restarts.
+ * It is a record, not a manager: Finder owns these files, so there is nothing
+ * to restore or purge from this side.
+ */
+function renderTrashed() {
+  const items = state.server?.trashed || [];
+  $('trashedSection').classList.toggle('hidden', items.length === 0);
+  if (!items.length) return;
+
+  $('trashedTotal').textContent =
+    `${items.length} item(s), ${fmt(items.reduce((a, e) => a + (e.dsize || 0), 0))}`;
+
+  const el = $('trashedList');
+  el.innerHTML = '';
+  for (const e of items) {
+    const d = document.createElement('div');
+    d.className = 'bin-item';
+    d.innerHTML = `
+      <div class="bin-row">
+        <span class="ico">${e.isDir ? '▸' : '·'}</span>
+        <div style="min-width:0">
+          <div><strong>${esc(String(e.path).split('/').pop())}</strong></div>
+          <div class="path">${esc(e.path)}</div>
+        </div>
+        <span class="trashed-tag">moved to Trash</span>
+        <span class="sz">${fmt(e.dsize)}</span>
+        <span class="sz" style="color:var(--muted);font-size:12px">${new Date(e.at).toLocaleTimeString()}</span>
+      </div>`;
+    el.append(d);
+  }
 }
 
 async function doPurge(ids) {
@@ -912,6 +962,7 @@ $('restoreSel').onclick = async () => {
     toast(r.ok ? 'Restored' : 'Restore failed', r.ok ? 'ok' : 'err');
   } catch (err) { toast(err.message, 'err'); }
 };
+$('openTrash').onclick = () => api('/api/open-trash', { method: 'POST' });
 $('junkRefresh').onclick = loadJunk;
 $('dupeStart').onclick = startDupes;
 $('dupeQuick').onclick = quickDeleteDupes;

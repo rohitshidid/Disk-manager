@@ -137,6 +137,8 @@ Kept for context — these were built and verified against real data.
 - [x] Direct permanent erase (`/api/erase`) alongside the bin and the Trash,
       gated behind a typed `DELETE`
 - [x] Hand bin items over to the macOS Trash (`/api/bin/trash`)
+- [x] Name the files each removal touched instead of only counting them, and
+      keep a session record of what went to the Trash under the Bin tab
 - [x] Fixed: purge un-marked its nodes, so the tree handed purged bytes back
 - [x] Name TCC refusals properly (`~/Library/Containers` and friends) instead
       of "may be protected, in use, or on a volume with no Trash", and stop

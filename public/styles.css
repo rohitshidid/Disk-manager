@@ -256,6 +256,7 @@ main { flex: 1; overflow: hidden; display: flex; }
 .sz { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dupe-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .keeper { color: var(--safe); font-size: 11px; white-space: nowrap; }
+.trashed-tag { color: var(--warn); font-size: 11px; white-space: nowrap; border: 1px solid var(--warn); border-radius: 20px; padding: 1px 7px; }
 .dupe-head strong { font-variant-numeric: tabular-nums; }
 
 /* ---------- status bar ---------- */

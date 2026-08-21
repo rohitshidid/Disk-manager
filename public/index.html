@@ -130,6 +130,21 @@
       </div>
     </div>
     <div id="binList" class="bin-list"></div>
+
+    <div id="trashedSection" class="hidden">
+      <div class="panel-intro">
+        <h2>Moved to the macOS Trash</h2>
+        <p>What this session handed to Finder. These are no longer in the bin and no longer counted
+        above — restore them with Finder’s “Put Back”, or empty the Trash to reclaim the space.
+        This list is not kept after the app restarts, because Finder can change the Trash without
+        telling us.</p>
+        <div class="row-controls">
+          <button id="openTrash" class="btn">Open Trash in Finder</button>
+          <span id="trashedTotal" class="hint"></span>
+        </div>
+      </div>
+      <div id="trashedList" class="bin-list"></div>
+    </div>
   </section>
 </main>
 

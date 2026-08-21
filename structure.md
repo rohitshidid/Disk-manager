@@ -10,7 +10,7 @@ Disk manager/
 ├── structure.md          this file — architecture and invariants
 ├── TODO.md               backlog
 ├── server/               Node backend (~2,450 lines)
-│   ├── index.js   (580)  HTTP server, routes, auth, tree↔quarantine sync
+│   ├── index.js   (603)  HTTP server, routes, auth, tree↔quarantine sync
 │   ├── scanner.js (425)  ncdu process, live tailing, stall detection
 │   ├── quarantine.js(362) delete / undo / redo / restore / purge + manifest
 │   ├── dispose.js  (207) macOS Trash + permanent erase
@@ -21,9 +21,9 @@ Disk manager/
 │   ├── safety.js  (157)  blocklist, risk assessment, batch screening, TCC
 │   └── elevate.js  (43)  one native admin prompt per batch
 └── public/               frontend, vanilla ES modules (~1,450 lines)
-    ├── app.js     (961)  all UI logic and state
-    ├── styles.css (310)  theme-aware styling, light + dark
-    ├── index.html (175)  markup shell; `__TOKEN__` is substituted at serve time
+    ├── app.js    (1012)  all UI logic and state
+    ├── styles.css (311)  theme-aware styling, light + dark
+    ├── index.html (190)  markup shell; `__TOKEN__` is substituted at serve time
     └── treemap.js  (53)  squarified treemap layout
 ```
 
@@ -189,7 +189,7 @@ process run and substituted into `index.html` at serve time.
 
 | Route | Purpose |
 |---|---|
-| `GET  /api/state` | scan progress, quarantine summary, disk usage, excludes |
+| `GET  /api/state` | scan progress, quarantine summary, disk usage, excludes, Trash record |
 | `POST /api/scan` | start a scan (`{root, elevated}`) |
 | `POST /api/scan/cached` | re-parse the previous export (~2 s vs a full rescan) |
 | `POST /api/scan/cancel` | writes the cancel sentinel |
@@ -206,6 +206,7 @@ process run and substituted into `index.html` at serve time.
 | `POST /api/trash` | move a batch to the macOS Trash |
 | `POST /api/erase` | permanently delete a batch — no bin, no Trash |
 | `POST /api/bin/trash` | hand quarantined items over to the macOS Trash |
+| `POST /api/open-trash` | open `~/.Trash` in Finder |
 | `POST /api/undo` · `/api/redo` | move an operation between stacks |
 | `POST /api/restore` · `/api/purge` | per-item restore; irreversible erase |
 | `POST /api/privacy-settings` | open the Full Disk Access pane |
@@ -262,7 +263,12 @@ process run and substituted into `index.html` at serve time.
    is a TCC refusal — and root cannot lift that one, so it is reported rather
    than prompted for. Reversing the two costs the user an admin prompt on a
    guaranteed refusal, or a wrong explanation on a fixable one.
-10. **A node marked gone stays gone.** `syncTree()` reconciles marks against
+10. **The Trash record is memory-only.** `trashedThisRun` in `index.js` is
+   never written to disk. Finder can empty the Trash or put an item back
+   without telling us, so a record that survived a restart would be asserting
+   things about a Trash it has not looked at. Session scope is the honest
+   scope, and the UI says so.
+11. **A node marked gone stays gone.** `syncTree()` reconciles marks against
    `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
    its bytes handed back to the tree. That is right for a restore and wrong for
    everything else, so trash, erase and purge register the node in `goneNodes`,

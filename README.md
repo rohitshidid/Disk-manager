@@ -159,6 +159,16 @@ deletion time. Restore, move to the macOS Trash, or purge — individually or in
 bulk. Moving a bin item to the Trash is a handover: it leaves the bin, drops out
 of the undo history and out of the reclaim total, and Finder takes over.
 
+Below it, **Moved to the macOS Trash** records what this session sent there,
+with the original path, size and time. Every removal already names the files it
+touched as it happens, but a toast is gone in four seconds and the rows vanish
+from the list with it — so the same information stays here, next to an *Open
+Trash in Finder* button. It is a record, not a manager: Finder owns those files,
+so there is nothing here to restore or purge. It is also not kept across a
+restart, because the Trash can be emptied or put back without this app hearing
+about it, and a list that outlived the process would be describing a Trash it
+knows nothing about.
+
 ## When a scan gets stuck (read this one)
 
 **Grant Full Disk Access to your terminal before the first full scan.**

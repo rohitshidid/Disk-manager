@@ -280,6 +280,9 @@ export class Quarantine {
       ok: trashed.length > 0,
       trashed: trashed.map((e) => e.displayPath),
       realPaths: trashed.map((e) => e.realPath),
+      moved: trashed.map((e) => ({
+        path: e.displayPath, realPath: e.realPath, dsize: e.dsize || 0, isDir: !!e.isDir,
+      })),
       bytes: trashed.reduce((a, e) => a + (e.dsize || 0), 0),
       failed,
       ...this.summary(),

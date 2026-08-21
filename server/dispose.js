@@ -153,7 +153,10 @@ export async function trashMany(targets, { force = false } = {}) {
   }
 
   return {
-    moved: moved.map((t) => ({ path: canonical(t.realPath), realPath: t.realPath })),
+    moved: moved.map((t) => ({
+      path: canonical(t.realPath), realPath: t.realPath,
+      dsize: t.dsize || 0, isDir: !!t.isDir,
+    })),
     rejected,
     bytes: moved.reduce((a, t) => a + (t.dsize || 0), 0),
   };

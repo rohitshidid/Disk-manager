@@ -112,6 +112,30 @@ deletion time. Restore or purge individually or in bulk.
 
 **Grant Full Disk Access to your terminal before the first full scan.**
 
+Check whether you already have it — this is the standard test, because
+`com.apple.TCC` is readable *only* by a process with Full Disk Access:
+
+```sh
+ls ~/Library/Application\ Support/com.apple.TCC/ >/dev/null 2>&1 \
+  && echo "GRANTED" || echo "NOT GRANTED"
+```
+
+The permission attaches to the **app that owns the terminal**, not to `node`
+and not to `ncdu`. To find which app that is:
+
+```sh
+pid=$$; while :; do
+  read -r ppid comm <<< "$(ps -o ppid=,comm= -p $pid)"
+  [ -z "$comm" ] && break; echo "$comm"
+  case "$comm" in */Contents/MacOS/*) break;; esac
+  [ "$ppid" -le 1 ] && break; pid=$ppid
+done
+```
+
+Add that app under **System Settings → Privacy & Security → Full Disk Access**,
+then **quit and reopen it completely** — TCC only applies to newly launched
+processes, so a running terminal keeps its old, denied permissions.
+
 macOS gates `~/Desktop`, `~/Documents`, `~/Downloads`, `~/Music`, `~/Pictures`
 and `~/Movies` behind separate privacy consents. A process that lacks consent
 for one of them does not get a permission error when it opens that folder — the

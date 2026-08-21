@@ -61,12 +61,12 @@ See `structure.md` for architecture and the invariants any fix must respect.
 
 ## Medium — correctness and polish
 
-- [ ] **`atime` only for the first 600 rows** of a directory; the rest show `—`
-      with no explanation. Either paginate the lookup on scroll or label it.
+- [ ] **`atime` still stops at the first 600 rows** of a directory, and at a
+      30,000-stat budget; rows past that show `—` with no explanation. Folders
+      that were measured but truncated now say so with a `~`, so only the
+      never-measured rows are still silent. Paginate the lookup on scroll.
 - [ ] **"Select all" checkbox is not reset on navigation** — it stays checked
       after moving to another folder while the selection has been cleared.
-- [ ] **No column sorting.** Always size-descending. Clicking Name / Size /
-      Items / Modified / Last used to sort is the obvious expectation.
 - [ ] **No per-folder refresh.** Any change means a full rescan. A "Refresh this
       folder" action that re-runs ncdu on one subtree and splices the result
       into the existing `TreeStore` would make the app feel live.
@@ -139,6 +139,15 @@ Kept for context — these were built and verified against real data.
 - [x] Hand bin items over to the macOS Trash (`/api/bin/trash`)
 - [x] Name the files each removal touched instead of only counting them, and
       keep a session record of what went to the Trash under the Bin tab
+- [x] Roll `Modified` up the subtree so a folder reports its newest contained
+      change, not its own entry-list date; own date kept as its own column.
+      Verified: three folders with identical own-mtimes and a file buried three
+      levels down reported 1 day / 30 days / 6 years correctly
+- [x] Roll `Last used` up too, bounded by a deadline and a stat budget, with
+      `~` marking a subtree too large to finish
+- [x] Age filters and search use the rolled-up dates
+- [x] Column sorting — click any heading, click again to reverse; size
+      descending by default; missing values always sort last
 - [x] Fixed: purge un-marked its nodes, so the tree handed purged bytes back
 - [x] Name TCC refusals properly (`~/Library/Containers` and friends) instead
       of "may be protected, in use, or on a volume with no Trash", and stop

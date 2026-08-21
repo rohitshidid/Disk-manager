@@ -104,7 +104,7 @@ export function findJunk(tree, { minSize = 1024 * 1024 } = {}) {
     const cutoff = Math.floor(Date.now() / 1000) - 90 * DAY;
     const rule = { id: 'old-downloads', label: 'Downloads older than 90 days', risk: 'caution', why: 'Untouched for three months. Check the list before removing — downloads are not always re-downloadable.' };
     for (const c of tree.children(dl)) {
-      if (tree.mtime[c] && tree.mtime[c] < cutoff) push(rule, c);
+      if (tree.subMtime[c] && tree.subMtime[c] < cutoff) push(rule, c);
     }
   }
 
@@ -126,7 +126,7 @@ export function findJunk(tree, { minSize = 1024 * 1024 } = {}) {
       name: tree.name(idx),
       size: tree.subD[idx],
       items: tree.subItems[idx],
-      mtime: tree.mtime[idx],
+      mtime: tree.subMtime[idx],
       isDir: tree.isDir(idx),
     });
     b.size += tree.subD[idx];

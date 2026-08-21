@@ -9,21 +9,21 @@ Disk manager/
 ├── README.md             user-facing guide: how it works, why, gotchas
 ├── structure.md          this file — architecture and invariants
 ├── TODO.md               backlog
-├── server/               Node backend (~2,450 lines)
-│   ├── index.js   (603)  HTTP server, routes, auth, tree↔quarantine sync
+├── server/               Node backend (~2,530 lines)
+│   ├── index.js   (682)  HTTP server, routes, auth, tree↔quarantine sync
 │   ├── scanner.js (425)  ncdu process, live tailing, stall detection
 │   ├── quarantine.js(362) delete / undo / redo / restore / purge + manifest
 │   ├── dispose.js  (207) macOS Trash + permanent erase
-│   ├── tree.js    (335)  TreeStore (typed arrays) + NcduParser (streaming)
+│   ├── tree.js    (345)  TreeStore (typed arrays) + NcduParser (streaming)
 │   ├── dupes.js   (175)  duplicate finder (size → head hash → full hash)
 │   ├── junk.js    (148)  rules for caches, build artefacts, package stores
 │   ├── util.js     (76)  paths, formatting, df, shell quoting
 │   ├── safety.js  (157)  blocklist, risk assessment, batch screening, TCC
 │   └── elevate.js  (43)  one native admin prompt per batch
-└── public/               frontend, vanilla ES modules (~1,450 lines)
-    ├── app.js    (1012)  all UI logic and state
-    ├── styles.css (311)  theme-aware styling, light + dark
-    ├── index.html (190)  markup shell; `__TOKEN__` is substituted at serve time
+└── public/               frontend, vanilla ES modules (~1,640 lines)
+    ├── app.js    (1069)  all UI logic and state
+    ├── styles.css (323)  theme-aware styling, light + dark
+    ├── index.html (194)  markup shell; `__TOKEN__` is substituted at serve time
     └── treemap.js  (53)  squarified treemap layout
 ```
 
@@ -92,12 +92,20 @@ node would be gigabytes; parallel typed arrays hold 1.35M nodes in **41 MB RSS**
 | `ownD`, `ownA` | `Float64Array` | this node's own disk / apparent size |
 | `subD`, `subA` | `Float64Array` | subtree totals after `aggregate()` |
 | `subItems`, `childCount` | `Uint32Array` | counts |
-| `mtime` | `Uint32Array` | unix seconds |
+| `mtime` | `Uint32Array` | unix seconds, this node only |
+| `subMtime` | `Uint32Array` | newest mtime anywhere in the subtree |
 | `flags` | `Uint8Array` | `F_DIR 1`, `F_ERR 2`, `F_HLDUP 4`, `F_DELETED 8`, `F_NOTREG 16` |
 | `nameOff`, `nameLen` + `nameBuf` | `Uint32/Uint16` + `Buffer` | names in one buffer |
 
 Children always get a higher index than their parent, so `aggregate()` is a
-single reverse loop. `nameIs()` compares bytes without allocating a string —
+single reverse loop — which is also why the newest-mtime rollup is free: it
+rides along in the pass that already totals sizes, one `max` per node.
+
+That rollup is the difference between a date that means something and one that
+does not. A directory's own `mtime` moves only when an entry is added, removed
+or renamed *directly* inside it, so a file edited three levels down leaves every
+ancestor looking untouched. Both are kept: `mtime` for the narrow question,
+`subMtime` for the one people are actually asking. `nameIs()` compares bytes without allocating a string —
 that is what makes the junk sweep over every node cost ~50 ms.
 
 `NcduParser` is an incremental parser for ncdu's format
@@ -238,6 +246,8 @@ process run and substituted into `index.html` at serve time.
 | `MAX_SURVEY_PROBES` / `MAX_CONFIRMS` | 600 / 80 | `scanner.js` |
 | `MAX_NODES` | 12,000,000 | `tree.js` |
 | `CHUNK` | 64 KB head hash | `dupes.js` |
+| `ATIME_DEADLINE_MS` | 4 s per listing | `index.js` |
+| `ATIME_TOTAL_STATS` / `ATIME_ROW_STATS` | 30,000 / 5,000 | `index.js` |
 | `BIG_BYTES` / `MANY_ITEMS` | 1 GiB / 10,000 | `safety.js` |
 
 ---
@@ -268,7 +278,13 @@ process run and substituted into `index.html` at serve time.
    without telling us, so a record that survived a restart would be asserting
    things about a Trash it has not looked at. Session scope is the honest
    scope, and the UI says so.
-11. **A node marked gone stays gone.** `syncTree()` reconciles marks against
+11. **The atime rollup must never enumerate a directory.** `newestAtime()`
+   takes its descendants from the tree, which already knows them, and only
+   ever calls `lstat` — never `readdir`. It also stays inside a deadline and a
+   stat budget, and reports `atimeApprox` rather than pretending a truncated
+   walk was complete. `lstat` still has no timeout, so the outer
+   `Promise.race` is what guarantees the listing returns.
+12. **A node marked gone stays gone.** `syncTree()` reconciles marks against
    `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
    its bytes handed back to the tree. That is right for a restore and wrong for
    everything else, so trash, erase and purge register the node in `goneNodes`,

@@ -127,9 +127,28 @@ other users' folders and system directories, but it does **not** get you into
 ## The four tabs
 
 **Explore** — breadcrumbs, a sortable list and a squarified treemap side by
-side, both showing the current folder. Columns include *Modified* and *Last
-used*, so you can find things that are both big and untouched. Filter by size or
-age; search the whole tree by name.
+side, both showing the current folder. Click any column heading to sort by it,
+and again to reverse it; the default is size, largest first.
+
+The date columns are about the folder's *contents*, not the folder:
+
+* **Modified** — the newest change anywhere inside, however deep. A folder whose
+  own record says 2020 but which holds a file edited yesterday reads as
+  yesterday, which is what anyone actually means by asking when it last changed.
+* **Folder** — the folder's own date, kept as a separate column because it does
+  mean something narrower: when an entry was last added, removed or renamed
+  *directly* inside. Blank for files, where it is identical to Modified.
+* **Last used** — the newest access time anywhere inside, same idea.
+
+Modified is free: the scan already has every file's date, so one pass up the
+tree carries the newest to the top. Last used is not — macOS does not report
+access times in the scan, so it costs one `lstat` per file underneath. That is
+bounded by a deadline and a stat budget, and a folder too large to finish is
+marked with a `~` meaning "newest found so far" rather than quietly guessing.
+
+The size and age filters use these same rolled-up dates, so *untouched 3
+months+* now means nothing inside changed — not merely that the folder's own
+entry list held still while files under it were being edited.
 
 **Junk finder** — sweeps for the known space sinks on a dev Mac: `node_modules`,
 Xcode `DerivedData` and iOS DeviceSupport, `.venv`, `.next`, `__pycache__`,
@@ -275,4 +294,7 @@ back empty.
   call, and rejects requests whose `Host` header isn't localhost (DNS-rebinding
   protection — this process can delete files).
 * A 1.35M-item tree occupies ~41 MB of RSS: the filesystem is held as parallel
-  typed arrays rather than one object per file, which would be gigabytes.
+  typed arrays rather than one object per file, which would be gigabytes. The
+  rolled-up modified date adds one more array — 4 bytes per node, about 5 MB at
+  that size — and is computed during the pass that already totals up sizes, so
+  it costs no extra time.

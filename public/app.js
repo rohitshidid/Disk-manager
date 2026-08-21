@@ -130,6 +130,9 @@ const state = {
   selected: new Set(),
   binSelected: new Set(),
   dupeResults: null,
+  // Size-descending is the useful default for a disk tool: the whole point is
+  // what is taking up room. Every other order is one header click away.
+  sort: { key: 'size', dir: 'desc' },
   tab: 'explore',
   pollTimer: null,
 };
@@ -369,16 +372,57 @@ function passesFilters(row) {
   const olderDays = Number($('olderThan').value);
   if (row.size < minSize) return false;
   if (olderDays) {
+    // Both of these are subtree values now, so "untouched" means nothing
+    // inside changed either — not merely that the folder's own entry list held
+    // still while files under it were being edited.
     const newest = Math.max(row.mtime || 0, row.atime || 0);
     if (!newest || newest > Date.now() / 1000 - olderDays * 86400) return false;
   }
   return true;
 }
 
+/**
+ * Order rows by the active column.
+ *
+ * Missing values always sort last, in both directions. A folder whose
+ * "Last used" could not be read within the budget should not win either end of
+ * the list on the strength of a value nobody measured.
+ */
+function sortRows(rows) {
+  const { key, dir } = state.sort;
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    if (key === 'name') return sign * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    const x = a[key];
+    const y = b[key];
+    const xm = x === null || x === undefined;
+    const ym = y === null || y === undefined;
+    if (xm || ym) return xm && ym ? 0 : xm ? 1 : -1;
+    return sign * (x - y) || a.name.localeCompare(b.name, undefined, { numeric: true });
+  });
+}
+
+/** Dates and sizes are most useful biggest-first; names are not. */
+function defaultDir(key) { return key === 'name' ? 'asc' : 'desc'; }
+
+function renderSortHeader() {
+  for (const btn of document.querySelectorAll('#listHead .sort')) {
+    const active = btn.dataset.sort === state.sort.key;
+    btn.classList.toggle('active', active);
+    btn.querySelector('.arrow')?.remove();
+    if (!active) continue;
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    arrow.textContent = state.sort.dir === 'asc' ? '▲' : '▼';
+    btn.append(arrow);
+  }
+}
+
 function renderRows(children, parentSize, truncated = 0) {
   const el = $('rows');
   el.innerHTML = '';
-  const visible = children.filter(passesFilters);
+  const visible = sortRows(children.filter(passesFilters));
+  renderSortHeader();
 
   if (!visible.length) {
     el.innerHTML = `<div class="empty">${children.length ? 'Nothing matches these filters.' : 'This folder is empty.'}</div>`;
@@ -397,7 +441,8 @@ function renderRows(children, parentSize, truncated = 0) {
       <span class="c-size">${fmt(c.size)}</span>
       <span class="c-items">${c.isDir ? c.items.toLocaleString() : ''}</span>
       <span class="c-date">${fmtDate(c.mtime)}</span>
-      <span class="c-date">${fmtDate(c.atime)}</span>
+      <span class="c-date">${c.isDir ? fmtDate(c.ownMtime) : ''}</span>
+      <span class="c-date">${c.atimeApprox && c.atime ? '<span class="approx">~</span>' : ''}${fmtDate(c.atime)}</span>
       <span class="row-actions">
         <button class="trash" title="Move to the macOS Trash">Trash</button>
         <button class="del" title="Move to Disk Manager's bin (undoable with ⌘Z)">Bin</button>
@@ -972,6 +1017,18 @@ $('minSize').onchange = $('olderThan').onchange = () => {
   if (state.searchMode || $('search').value.trim()) runSearch();
   else if (state.dir) renderRows(state.dir.children, state.dir.node.size, state.dir.truncated);
 };
+/** Click a header to sort by it; click the active one again to reverse it. */
+$('listHead').onclick = (e) => {
+  const btn = e.target.closest('.sort');
+  if (!btn) return;
+  const key = btn.dataset.sort;
+  state.sort = state.sort.key === key
+    ? { key, dir: state.sort.dir === 'asc' ? 'desc' : 'asc' }
+    : { key, dir: defaultDir(key) };
+  if (state.searchMode) runSearch();
+  else if (state.dir) renderRows(state.dir.children, state.dir.node.size, state.dir.truncated);
+};
+
 $('checkAll').onchange = (e) => {
   if (!state.dir) return;
   const rows = state.dir.children.filter(passesFilters);

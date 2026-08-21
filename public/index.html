@@ -56,14 +56,18 @@
 
     <div class="split">
       <div class="pane list-pane">
-        <div class="listhead">
+        <div class="listhead" id="listHead">
           <span class="c-check"><input type="checkbox" id="checkAll" title="Select all"></span>
-          <span class="c-name">Name</span>
+          <button class="c-name sort" data-sort="name">Name</button>
           <span class="c-bar"></span>
-          <span class="c-size">Size</span>
-          <span class="c-items">Items</span>
-          <span class="c-date">Modified</span>
-          <span class="c-date">Last used</span>
+          <button class="c-size sort" data-sort="size">Size</button>
+          <button class="c-items sort" data-sort="items">Items</button>
+          <button class="c-date sort" data-sort="mtime"
+            title="Newest change anywhere inside this folder">Modified</button>
+          <button class="c-date sort" data-sort="ownMtime"
+            title="When this folder's own entry list last changed — something added, removed or renamed directly inside it. Blank for files, where it is the same as Modified.">Folder</button>
+          <button class="c-date sort" data-sort="atime"
+            title="Newest access time anywhere inside. A ~ means the subtree was too large to finish reading, so this is the newest found so far.">Last used</button>
         </div>
         <div id="rows" class="rows"></div>
         <div id="listNote" class="note"></div>

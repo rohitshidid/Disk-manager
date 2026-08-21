@@ -156,18 +156,96 @@ function nodeView(tree, idx, parentSize) {
     isDir: tree.isDir(idx),
     deleted: tree.isDeleted(idx),
     unreadable: (tree.flags[idx] & F_ERR) !== 0,
-    mtime: tree.mtime[idx] || null,
+    mtime: tree.subMtime[idx] || null,
+    ownMtime: tree.mtime[idx] || null,
     share: parentSize > 0 ? tree.subD[idx] / parentSize : 0,
   };
 }
 
-/** Last-used dates for the visible rows. Bounded by a deadline: a path whose
- *  provider is unresponsive must not be able to hang the whole listing. */
-async function withAtimes(rows) {
-  const work = Promise.all(rows.slice(0, 600).map(async (r) => {
-    try { r.atime = Math.floor((await fsp.lstat(r.realPath)).atimeMs / 1000); } catch { r.atime = null; }
-  }));
-  await Promise.race([work, new Promise((r) => setTimeout(r, 3000))]);
+/**
+ * Bounds on the "Last used" rollup.
+ *
+ * A directory's own atime records when its entry list was read, not when
+ * anything inside it was opened, so what gets shown is the newest atime in the
+ * whole subtree. Unlike the mtime rollup, that cannot come from the scan —
+ * ncdu does not export atime — so it costs one `lstat` per descendant, which
+ * is unbounded on something like `node_modules`.
+ *
+ * Hence three ceilings: a deadline for the whole listing, a stat budget for
+ * the whole listing, and a cap on what any single folder may spend. A row that
+ * hit one of them is returned as approximate and the UI marks it with a `~`.
+ */
+const ATIME_DEADLINE_MS = 4000;
+const ATIME_TOTAL_STATS = 30_000;
+const ATIME_ROW_STATS = 5_000;
+const ATIME_CONCURRENCY = 32;
+
+/**
+ * Newest access time at or under `idx`.
+ *
+ * Descendants come from the tree, never from `readdir` — that is invariant 1,
+ * and it also makes the walk itself free, since the scan already knows what is
+ * in there. The only cost is the `lstat` calls.
+ */
+async function newestAtime(tree, idx, ctx) {
+  const cap = Math.min(ATIME_ROW_STATS, ctx.budget);
+  const paths = [];
+  let approx = false;
+
+  if (tree.isDir(idx)) {
+    const stack = [idx];
+    while (stack.length) {
+      if (paths.length >= cap) { approx = true; break; }
+      const i = stack.pop();
+      paths.push(tree.pathOf(i));
+      for (let c = tree.firstChild[i]; c !== -1; c = tree.nextSib[c]) {
+        if (!tree.isDeleted(c)) stack.push(c);
+      }
+    }
+  } else {
+    paths.push(tree.pathOf(idx));
+  }
+
+  let newest = 0;
+  let used = 0;
+  for (let i = 0; i < paths.length; i += ATIME_CONCURRENCY) {
+    if (Date.now() > ctx.deadline) { approx = true; break; }
+    const chunk = paths.slice(i, i + ATIME_CONCURRENCY);
+    const times = await Promise.all(chunk.map((p) => fsp.lstat(p).then((st) => st.atimeMs, () => 0)));
+    used += chunk.length;
+    for (const ms of times) {
+      const secs = Math.floor(ms / 1000);
+      if (secs > newest) newest = secs;
+    }
+  }
+  return { atime: newest || null, approx, used };
+}
+
+/**
+ * Last-used dates for the visible rows.
+ *
+ * The whole thing races a deadline. `lstat` has no timeout and a path whose
+ * provider is unresponsive blocks forever, so the guarantee here is only that
+ * the *listing* returns — a wedged stat is abandoned, not cancelled. Rows that
+ * were never reached keep `atime: null`, which reads as "—".
+ */
+async function withAtimes(rows, idxs) {
+  const tree = scanner.tree;
+  for (const r of rows) { r.atime = null; r.atimeApprox = false; }
+  if (!tree) return rows;
+
+  const ctx = { deadline: Date.now() + ATIME_DEADLINE_MS, budget: ATIME_TOTAL_STATS };
+  const work = (async () => {
+    for (let k = 0; k < Math.min(rows.length, 600); k++) {
+      if (Date.now() > ctx.deadline || ctx.budget <= 0) break;
+      const res = await newestAtime(tree, idxs[k], ctx);
+      rows[k].atime = res.atime;
+      rows[k].atimeApprox = res.approx;
+      ctx.budget -= res.used;
+    }
+  })();
+
+  await Promise.race([work, new Promise((r) => setTimeout(r, ATIME_DEADLINE_MS))]);
   return rows;
 }
 
@@ -383,8 +461,9 @@ const routes = {
       .filter((c) => !tree.isDeleted(c))
       .sort((a, b) => tree.subD[b] - tree.subD[a]);
     const LIMIT = 1000;
-    const rows = kids.slice(0, LIMIT).map((c) => nodeView(tree, c, size));
-    await withAtimes(rows);
+    const shown = kids.slice(0, LIMIT);
+    const rows = shown.map((c) => nodeView(tree, c, size));
+    await withAtimes(rows, shown);
 
     const crumbs = [];
     for (let cur = idx; cur >= 0; cur = tree.parent[cur]) {
@@ -415,7 +494,7 @@ const routes = {
       if (tree.isDeleted(i)) continue;
       if (dirsOnly && !tree.isDir(i)) continue;
       if (tree.subD[i] < minSize) continue;
-      if (cutoff && (!tree.mtime[i] || tree.mtime[i] > cutoff)) continue;
+      if (cutoff && (!tree.subMtime[i] || tree.subMtime[i] > cutoff)) continue;
       if (q && !tree.name(i).toLowerCase().includes(q)) continue;
       hits.push(i);
       if (hits.length > 20000) break;

@@ -37,6 +37,11 @@ export class TreeStore {
     this.subA = new Float64Array(cap);
     this.subItems = new Uint32Array(cap);
     this.mtime = new Uint32Array(cap);
+    // Newest mtime anywhere in the subtree. A directory's own mtime only moves
+    // when an entry is added, removed or renamed directly inside it, so it says
+    // nothing about a file edited three levels down -- which is what people
+    // mean when they ask when a folder last changed.
+    this.subMtime = new Uint32Array(cap);
     this.flags = new Uint8Array(cap);
     this.nameOff = new Uint32Array(cap);
     this.nameLen = new Uint16Array(cap);
@@ -56,7 +61,8 @@ export class TreeStore {
       ['parent', Int32Array], ['firstChild', Int32Array], ['lastChild', Int32Array],
       ['nextSib', Int32Array], ['childCount', Uint32Array], ['ownD', Float64Array],
       ['ownA', Float64Array], ['subD', Float64Array], ['subA', Float64Array],
-      ['subItems', Uint32Array], ['mtime', Uint32Array], ['flags', Uint8Array],
+      ['subItems', Uint32Array], ['mtime', Uint32Array], ['subMtime', Uint32Array],
+      ['flags', Uint8Array],
       ['nameOff', Uint32Array], ['nameLen', Uint16Array],
     ]) {
       const old = this[k];
@@ -93,6 +99,7 @@ export class TreeStore {
     this.subD[i] = dsize;
     this.subA[i] = asize;
     this.mtime[i] = mtime;
+    this.subMtime[i] = mtime;
     if (flags & F_ERR) this.readErrors++;
 
     if (parent >= 0) {
@@ -126,13 +133,16 @@ export class TreeStore {
   /** Roll subtree totals up into every ancestor. Children always have a
    *  higher index than their parent, so one reverse pass is enough. */
   aggregate() {
-    const { parent, subD, subA, subItems } = this;
+    const { parent, subD, subA, subItems, subMtime } = this;
     for (let i = this.n - 1; i >= 1; i--) {
       const p = parent[i];
       if (p < 0) continue;
       subD[p] += subD[i];
       subA[p] += subA[i];
       subItems[p] += subItems[i] + 1;
+      // Children always sit at a higher index than their parent, so one
+      // reverse pass carries the newest mtime all the way to the root.
+      if (subMtime[i] > subMtime[p]) subMtime[p] = subMtime[i];
     }
   }
 

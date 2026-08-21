@@ -154,12 +154,12 @@ main { flex: 1; overflow: hidden; display: flex; }
 
 .split { flex: 1; display: flex; overflow: hidden; }
 .pane { overflow: hidden; display: flex; flex-direction: column; }
-.list-pane { flex: 1.15; min-width: 420px; border-right: 1px solid var(--border); }
+.list-pane { flex: 1.35; min-width: 520px; border-right: 1px solid var(--border); }
 .map-pane { flex: 1; min-width: 300px; }
 
 .listhead, .row {
   display: grid;
-  grid-template-columns: 28px minmax(120px, 1fr) 84px 84px 62px 96px 96px;
+  grid-template-columns: 28px minmax(110px, 1fr) 70px 80px 58px 88px 88px 88px;
   align-items: center; gap: 8px;
   padding: 0 14px;
 }
@@ -168,6 +168,18 @@ main { flex: 1; overflow: hidden; display: flex; }
   color: var(--faint); border-bottom: 1px solid var(--border); background: var(--surface);
   flex-shrink: 0;
 }
+/* Header cells double as sort controls; they must not look like page buttons. */
+.listhead .sort {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit;
+  display: flex; align-items: center; gap: 3px;
+}
+.listhead .sort:hover { color: var(--text); }
+.listhead .sort.active { color: var(--accent); }
+.listhead .c-size.sort, .listhead .c-items.sort, .listhead .c-date.sort { justify-content: flex-end; }
+.listhead .arrow { font-size: 9px; }
+.approx { color: var(--faint); }
+
 .rows { overflow-y: auto; flex: 1; }
 .row {
   height: 34px; border-bottom: 1px solid var(--border);

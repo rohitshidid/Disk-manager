@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk Manager</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>💾</text></svg>">
+</head>
+<body data-token="__TOKEN__">
+
+<header class="topbar">
+  <div class="brand"><span class="logo">◧</span> Disk Manager</div>
+  <div class="scan-info" id="scanInfo">Not scanned yet</div>
+  <div class="spacer"></div>
+  <div class="history">
+    <button id="undoBtn" class="btn ghost" disabled title="Undo (⌘Z)">↺ Undo</button>
+    <button id="redoBtn" class="btn ghost" disabled title="Redo (⇧⌘Z)">↻ Redo</button>
+  </div>
+  <button id="scanBtn" class="btn primary">Scan disk</button>
+</header>
+
+<div id="scanBar" class="scanbar hidden">
+  <div class="spinner"></div>
+  <span id="scanText">Scanning…</span>
+  <button id="cancelScan" class="btn ghost small">Cancel</button>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-tab="explore">Explore</button>
+  <button class="tab" data-tab="junk">Junk finder</button>
+  <button class="tab" data-tab="dupes">Duplicates</button>
+  <button class="tab" data-tab="bin">Bin <span class="pill" id="binCount">0</span></button>
+</nav>
+
+<main>
+  <!-- EXPLORE -->
+  <section class="view active" id="view-explore">
+    <div class="toolbar">
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="spacer"></div>
+      <input id="search" class="input" type="search" placeholder="Search all files…  ( / )">
+      <select id="olderThan" class="input narrow" title="Only show items untouched for at least this long">
+        <option value="0">Any age</option>
+        <option value="90">Untouched 3 months+</option>
+        <option value="180">Untouched 6 months+</option>
+        <option value="365">Untouched 1 year+</option>
+      </select>
+      <select id="minSize" class="input narrow" title="Hide items below this size">
+        <option value="0">Any size</option>
+        <option value="10485760">10 MB+</option>
+        <option value="104857600">100 MB+</option>
+        <option value="1073741824">1 GB+</option>
+      </select>
+    </div>
+
+    <div class="split">
+      <div class="pane list-pane">
+        <div class="listhead">
+          <span class="c-check"><input type="checkbox" id="checkAll" title="Select all"></span>
+          <span class="c-name">Name</span>
+          <span class="c-bar"></span>
+          <span class="c-size">Size</span>
+          <span class="c-items">Items</span>
+          <span class="c-date">Modified</span>
+          <span class="c-date">Last used</span>
+        </div>
+        <div id="rows" class="rows"></div>
+        <div id="listNote" class="note"></div>
+      </div>
+      <div class="pane map-pane">
+        <div class="map-head"><span id="mapTitle">—</span><span id="mapHint" class="hint">click a block to drill in</span></div>
+        <div id="treemap" class="treemap"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- JUNK -->
+  <section class="view" id="view-junk">
+    <div class="panel-intro">
+      <h2>Junk finder</h2>
+      <p>Caches, build artefacts and package archives — the folders that regrow on their own. Only locations of 1&nbsp;MB or more are listed. Everything here goes to the bin first, so any mistake is one Undo away.</p>
+      <button id="junkRefresh" class="btn">Find junk</button>
+      <span id="junkTotal" class="big-number"></span>
+    </div>
+    <div id="junkList" class="junk-list"></div>
+  </section>
+
+  <!-- DUPES -->
+  <section class="view" id="view-dupes">
+    <div class="panel-intro">
+      <h2>Duplicate files</h2>
+      <p>Byte-identical copies. Files are grouped by size first, then hashed, so only real candidates get read.</p>
+      <div class="row-controls">
+        <label>Look inside <input id="dupeRoot" class="input" value=""></label>
+        <label>Files at least
+          <select id="dupeMin" class="input narrow">
+            <option value="1048576">1 MB</option>
+            <option value="10485760" selected>10 MB</option>
+            <option value="104857600">100 MB</option>
+          </select>
+        </label>
+        <button id="dupeStart" class="btn">Find duplicates</button>
+        <button id="dupeCancel" class="btn ghost hidden">Stop</button>
+      </div>
+      <div id="dupeStatus" class="hint"></div>
+    </div>
+    <p class="caveat">Note: macOS can store two files that share the same blocks (an APFS clone). Deleting one of those frees nothing — the space shown here is an upper bound.</p>
+    <div id="dupeList" class="dupe-list"></div>
+  </section>
+
+  <!-- BIN -->
+  <section class="view" id="view-bin">
+    <div class="panel-intro">
+      <h2>Bin</h2>
+      <p>Nothing here has been erased yet. Each item was moved aside on the same volume, so restoring is instant and exact. Space comes back only when you purge.</p>
+      <div class="row-controls">
+        <button id="restoreSel" class="btn" disabled>Restore selected</button>
+        <button id="purgeSel" class="btn danger" disabled>Purge selected…</button>
+        <button id="purgeAll" class="btn danger" disabled>Purge everything…</button>
+      </div>
+    </div>
+    <div id="binList" class="bin-list"></div>
+  </section>
+</main>
+
+<footer class="statusbar">
+  <div class="disk">
+    <div class="disk-labels">
+      <strong id="diskUsed">—</strong> used · <span id="diskFree">—</span> free
+      <span id="projection" class="projection"></span>
+    </div>
+    <div class="gauge" id="gauge">
+      <div class="gauge-used" id="gaugeUsed"></div>
+      <div class="gauge-reclaim" id="gaugeReclaim"></div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="reclaim">
+    <div class="reclaim-num" id="reclaimBytes">0 B</div>
+    <div class="reclaim-label"><span id="reclaimCount">0</span> item(s) in bin — freed on purge</div>
+  </div>
+  <button id="purgeFooter" class="btn danger" disabled>Purge…</button>
+  <button id="deleteSelected" class="btn danger-outline hidden">Delete selected</button>
+</footer>
+
+<dialog id="confirmDlg" class="dlg">
+  <h3 id="dlgTitle">Confirm</h3>
+  <div id="dlgBody"></div>
+  <label id="dlgTypeWrap" class="type-confirm hidden">
+    Type <code>DELETE</code> to continue:
+    <input id="dlgType" class="input" autocomplete="off">
+  </label>
+  <div class="dlg-actions">
+    <button id="dlgCancel" class="btn ghost">Cancel</button>
+    <button id="dlgOk" class="btn danger">Confirm</button>
+  </div>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

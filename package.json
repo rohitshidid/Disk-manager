@@ -1,0 +1,13 @@
+{
+  "name": "disk-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Visual disk usage explorer for macOS with reversible deletes",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --max-old-space-size=4096 server/index.js",
+    "dev": "node --max-old-space-size=4096 server/index.js --open"
+  },
+  "engines": { "node": ">=20" }
+}

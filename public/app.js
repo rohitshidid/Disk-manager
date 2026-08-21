@@ -76,6 +76,38 @@ function confirmDlg({ title, html, okLabel = 'Confirm', typed = false }) {
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+/**
+ * Report what the server refused.
+ *
+ * A privacy refusal gets a dialog rather than a toast, because unlike every
+ * other rejection it has one specific fix, that fix covers every item refused
+ * for the same reason at once, and it is a button away. Everything else is a
+ * per-item problem and stays a per-item toast.
+ */
+async function reportRejections(rejected) {
+  if (!rejected?.length) return;
+  for (const rj of rejected.filter((r) => !r.privacy)) toast(`${rj.path}: ${rj.reason}`, 'err');
+
+  const blocked = rejected.filter((r) => r.privacy);
+  if (!blocked.length) return;
+  const reasons = [...new Set(blocked.map((r) => r.reason))];
+  const ok = await confirmDlg({
+    title: `macOS blocked ${blocked.length} item(s)`,
+    html: `
+      ${reasons.map((r) => `<div class="warnbox">${esc(r)}</div>`).join('')}
+      <p style="color:var(--muted)">This is a privacy consent, not a file permission. An
+      administrator password will not lift it, and neither will changing who owns the folder.
+      macOS only applies a new consent to freshly launched processes, so the terminal has to be
+      quit and reopened — not just restarted from inside itself.</p>
+      <div class="target-list">${blocked.slice(0, 60).map((r) => `<div>${esc(r.path)}</div>`).join('')}</div>`,
+    okLabel: 'Open Privacy settings',
+  });
+  if (ok) {
+    api('/api/privacy-settings', { method: 'POST' });
+    toast('Add your terminal under Full Disk Access, then quit and reopen it completely.');
+  }
+}
+
 /* ------------------------------------------------------------------ state */
 
 const state = {
@@ -542,7 +574,7 @@ async function requestRemoval(paths, mode = 'bin', { preamble = '' } = {}) {
 
     const done = spec.result(r) || [];
     if (done.length) toast(spec.done(done.length, fmt(r.bytes ?? total)), 'ok');
-    for (const rj of r.rejected) toast(`${rj.path}: ${rj.reason}`, 'err');
+    await reportRejections(r.rejected);
 
     // The duplicate list is a snapshot of a finished hash run, not something
     // the server re-derives. Drop what just left rather than making the user
@@ -568,7 +600,7 @@ async function doUndo() {
       toast(`Restored ${r.restored.length} item(s)`, 'ok');
       for (const x of r.restored) if (x.restoredTo !== x.path) toast(`${x.path} was occupied — restored as ${x.restoredTo}`);
     } else toast(r.message || 'Undo failed', 'err');
-    for (const f of r.failed || []) toast(`${f.path}: ${f.reason}`, 'err');
+    await reportRejections(r.failed);
     await reloadCurrent(); if (state.tab === 'bin') renderBin();
   } catch (err) { toast(err.message, 'err'); }
 }
@@ -660,7 +692,7 @@ async function binTrash(ids) {
     renderBin(); renderStatus(); reloadCurrent();
     if (r.ok) toast(`Moved ${r.trashed.length} item(s) to the Trash — ${fmt(r.bytes)}. Empty the Trash in Finder to get the space back.`, 'ok');
     else toast(r.message || 'Nothing was moved to the Trash.', 'err');
-    for (const f of r.failed || []) toast(`${f.path}: ${f.reason}`, 'err');
+    await reportRejections(r.failed);
   } catch (err) { toast(err.message, 'err'); }
 }
 

@@ -13,15 +13,15 @@ Disk manager/
 │   ├── index.js   (580)  HTTP server, routes, auth, tree↔quarantine sync
 │   ├── scanner.js (425)  ncdu process, live tailing, stall detection
 │   ├── quarantine.js(362) delete / undo / redo / restore / purge + manifest
-│   ├── dispose.js  (189) macOS Trash + permanent erase
+│   ├── dispose.js  (207) macOS Trash + permanent erase
 │   ├── tree.js    (335)  TreeStore (typed arrays) + NcduParser (streaming)
 │   ├── dupes.js   (175)  duplicate finder (size → head hash → full hash)
 │   ├── junk.js    (148)  rules for caches, build artefacts, package stores
 │   ├── util.js     (76)  paths, formatting, df, shell quoting
-│   ├── safety.js  (111)  deletion blocklist, risk assessment, batch screening
+│   ├── safety.js  (157)  blocklist, risk assessment, batch screening, TCC
 │   └── elevate.js  (43)  one native admin prompt per batch
 └── public/               frontend, vanilla ES modules (~1,450 lines)
-    ├── app.js     (929)  all UI logic and state
+    ├── app.js     (961)  all UI logic and state
     ├── styles.css (310)  theme-aware styling, light + dark
     ├── index.html (175)  markup shell; `__TOKEN__` is substituted at serve time
     └── treemap.js  (53)  squarified treemap layout
@@ -145,6 +145,13 @@ quarantine. `danger` = outside `/Users` (typed confirmation). `caution` = over
 Every removal path calls it, which is what keeps "the bin refuses this" and
 "the Trash refuses this" from drifting apart.
 
+`privacyRefusal()` explains a failure macOS has already returned. It covers
+`~/Library/Containers`, `~/Library/Group Containers` and the six privacy
+folders — a separate list from `scanner.js`'s `TCC_PROTECTED`, which is about
+*reading*: those folders hang an unconsented `openat()` forever, while these
+refuse writes immediately with `EPERM`. The overlap is only partial, so
+conflating them would mislabel each.
+
 ### `dispose.js`
 
 The two removals that hand the item to somebody else.
@@ -249,7 +256,13 @@ process run and substituted into `index.html` at serve time.
    `DELETE` in the UI. Every other path is a rename that can be walked back —
    into the quarantine, where this app can undo it, or into the macOS Trash,
    where Finder can.
-9. **A node marked gone stays gone.** `syncTree()` reconciles marks against
+9. **Try root before blaming privacy.** An unwritable parent is an ordinary
+   permission problem and root fixes it, including inside a folder that is also
+   privacy-gated. Only a path POSIX says is movable, that macOS refused anyway,
+   is a TCC refusal — and root cannot lift that one, so it is reported rather
+   than prompted for. Reversing the two costs the user an admin prompt on a
+   guaranteed refusal, or a wrong explanation on a fixable one.
+10. **A node marked gone stays gone.** `syncTree()` reconciles marks against
    `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
    its bytes handed back to the tree. That is right for a restore and wrong for
    everything else, so trash, erase and purge register the node in `goneNodes`,

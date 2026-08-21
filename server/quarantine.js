@@ -5,7 +5,7 @@ import {
   APP_DIR, QUARANTINE_DIR, MANIFEST_PATH, uid, nowIso, shQuote, canonical,
 } from './util.js';
 import { runElevated } from './elevate.js';
-import { screenTargets, sameVolume } from './safety.js';
+import { screenTargets, sameVolume, privacyRefusal } from './safety.js';
 import { trashPaths } from './dispose.js';
 
 const EMPTY = { version: 1, entries: {}, undoStack: [], redoStack: [] };
@@ -147,7 +147,7 @@ export class Quarantine {
     for (const e of entries) {
       const r = result.byId.get(e.id);
       if (r?.ok) { e.neededRoot = !!r.elevated; this.state.entries[e.id] = e; moved.push(e); }
-      else rejected.push({ path: e.displayPath, reason: r?.error || 'Move failed.' });
+      else rejected.push({ path: e.displayPath, reason: r?.error || 'Move failed.', privacy: !!r?.privacy });
     }
 
     if (moved.length) {
@@ -193,7 +193,7 @@ export class Quarantine {
       const e = this.state.entries[m.id];
       const r = result.byId.get(m.id);
       if (r?.ok) { e.state = 'quarantined'; delete e.restoredTo; redone.push(e.displayPath); }
-      else failed.push({ path: e.displayPath, reason: r?.error || 'Move failed.' });
+      else failed.push({ path: e.displayPath, reason: r?.error || 'Move failed.', privacy: !!r?.privacy });
     }
     this.state.undoStack.push(op);
     await this.save();
@@ -242,7 +242,7 @@ export class Quarantine {
         restored.push({ path: e.displayPath, restoredTo: canonical(m.to) });
         await fs.rm(e.holder, { recursive: true, force: true }).catch(() => {});
       } else {
-        failed.push({ path: e.displayPath, reason: r?.error || 'Restore failed.' });
+        failed.push({ path: e.displayPath, reason: r?.error || 'Restore failed.', privacy: !!r?.privacy });
       }
     }
     return { restored, failed };
@@ -340,7 +340,15 @@ async function performMoves(moves, prompt) {
       } else if (err.code === 'ENOENT') {
         byId.set(m.id, { ok: false, error: 'Path no longer exists.' });
       } else if (['EACCES', 'EPERM', 'EROFS'].includes(err.code)) {
-        needsRoot.push(m);
+        // EPERM that POSIX cannot account for — a writable parent we still may
+        // not move out of — is a TCC refusal, and root cannot lift it. An
+        // unwritable parent is an ordinary permission problem, so let it
+        // through to the elevated batch as before.
+        let parentWritable = false;
+        try { fsSync.accessSync(path.dirname(m.from), fsSync.constants.W_OK); parentWritable = true; } catch {}
+        const privacy = parentWritable ? privacyRefusal(m.from) : null;
+        if (privacy) byId.set(m.id, { ok: false, error: privacy, privacy: true });
+        else needsRoot.push(m);
       } else {
         byId.set(m.id, { ok: false, error: `${err.code || ''} ${err.message}`.trim() });
       }

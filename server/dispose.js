@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { HOME, uid, shQuote, canonical, nowIso } from './util.js';
 import { runElevated } from './elevate.js';
-import { screenTargets } from './safety.js';
+import { screenTargets, privacyRefusal } from './safety.js';
 
 /**
  * Removal paths that leave the app's control.
@@ -114,14 +114,26 @@ export async function trashMany(targets, { force = false } = {}) {
   const moved = kept.filter((_, i) => results[i]);
   const failed = kept.filter((_, i) => !results[i]);
 
-  // NSFileManager does not tell us *why* it declined, and its NSError does not
-  // survive the JXA bridge. A parent directory we cannot write to is the one
-  // failure worth retrying; anything else is a genuine refusal.
-  const needsRoot = failed.filter((t) => !writable(path.dirname(t.realPath)));
+  // NSFileManager does not tell us *why* it declined -- its NSError does not
+  // survive the JXA bridge, and asking for it segfaults osascript -- so the
+  // reason is worked out here instead.
+  //
+  // Order matters, and this order is the one that holds in both directions.
+  //
+  // An unwritable parent is a plain permission problem, and root does fix it —
+  // including inside a folder that also happens to be privacy-gated, so that
+  // case must be tried before the privacy explanation is offered.
+  //
+  // What is left is a path POSIX says we may move and macOS refused anyway.
+  // That is the signature of a TCC refusal: an app container is owned by the
+  // user, in a user-owned parent, and still cannot be moved. Retrying it as
+  // root would spend an admin prompt on a refusal root was never going to lift.
+  const needsRoot = [];
   for (const t of failed) {
-    if (!needsRoot.includes(t)) {
-      rejected.push({ path: canonical(t.realPath), reason: 'macOS refused to move this to the Trash. It may be protected, in use, or on a volume with no Trash.' });
-    }
+    if (!writable(path.dirname(t.realPath))) { needsRoot.push(t); continue; }
+    const privacy = privacyRefusal(t.realPath);
+    if (privacy) { rejected.push({ path: canonical(t.realPath), reason: privacy, privacy: true }); continue; }
+    rejected.push({ path: canonical(t.realPath), reason: 'macOS refused to move this to the Trash. It may be open in another app, or on a volume with no Trash.' });
   }
 
   if (needsRoot.length) {
@@ -161,7 +173,13 @@ export async function eraseMany(targets, { force = false } = {}) {
   const stubborn = [];
   for (const t of kept) {
     try { await fs.rm(t.realPath, { recursive: true, force: true }); erased.push(t); }
-    catch { stubborn.push(t); }
+    catch {
+      // Same order as trashMany(): an unwritable parent is root's to fix, and
+      // only a refusal POSIX cannot account for is a privacy refusal.
+      const privacy = writable(path.dirname(t.realPath)) ? privacyRefusal(t.realPath) : null;
+      if (privacy) rejected.push({ path: canonical(t.realPath), reason: privacy, privacy: true });
+      else stubborn.push(t);
+    }
   }
 
   if (stubborn.length) {

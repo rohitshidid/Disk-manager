@@ -82,6 +82,26 @@ number climb, purge once when it is worth it.
   `name (restored 2026-08-21T15-30-00)` rather than overwriting it.
 * Purging clears both stacks — those items are genuinely gone.
 
+### When macOS refuses
+
+Some folders cannot be removed by any means the app has, and no amount of
+admin rights changes that. `~/Library/Containers` and `~/Library/Group
+Containers` — every sandboxed app's private storage — are the common case, and
+the six privacy folders (`~/Desktop`, `~/Documents`, `~/Downloads`, `~/Music`,
+`~/Pictures`, `~/Movies`) behave the same way.
+
+This is worth being precise about, because the POSIX permissions actively
+mislead you. A directory you created yourself, inside `~/Library/Containers`,
+owned by you, with a writable parent, still cannot be renamed, trashed or
+deleted: `mv` reports `Operation not permitted`. Nothing about the file is
+wrong — macOS is withholding consent from the *process*.
+
+So the app does not try to elevate out of it. An admin prompt would be spent
+discovering that root does not help either. It names the folder, says Full Disk
+Access is the fix, and offers a button that opens the right settings pane.
+Remember that a new consent only applies to freshly launched processes, so the
+terminal must be quit and reopened, not restarted from inside itself.
+
 ## Safety
 
 A blocklist refuses deletion outright inside SIP-protected and boot-critical

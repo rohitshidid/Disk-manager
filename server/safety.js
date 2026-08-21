@@ -64,6 +64,52 @@ export function assess(realPath, { size = 0, items = 0 } = {}) {
   return { level, reason: '', confirm };
 }
 
+/**
+ * Locations macOS refuses to let an unconsented process *modify*, whatever the
+ * POSIX permissions say.
+ *
+ * This is a different list from `scanner.js`'s `TCC_PROTECTED`, which is about
+ * reading: those folders hang an unconsented `openat()` forever. These refuse
+ * writes, immediately and with `EPERM`. The overlap is only partial — an app
+ * container lists fine at the top level but cannot be moved, while `~/Desktop`
+ * does both — so conflating them would mislabel each.
+ *
+ * Verified here: a directory created by this user, inside
+ * `~/Library/Containers`, owned by this user, with a writable parent, still
+ * could not be renamed, trashed or removed. `mv` reported `Operation not
+ * permitted`.
+ */
+const APP_DATA_ROOTS = [
+  path.join(HOME, 'Library', 'Containers'),
+  path.join(HOME, 'Library', 'Group Containers'),
+];
+const PRIVACY_DIRS = ['Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'Movies']
+  .map((d) => path.join(HOME, d));
+
+/**
+ * Why macOS will refuse to move or delete this path, or null if it won't.
+ *
+ * Callers use this to skip the elevated retry as well as to explain
+ * themselves: this is a privacy consent, not a permission, so root does not
+ * help and asking for it only spends an admin prompt on a guaranteed refusal.
+ */
+export function privacyRefusal(realPath) {
+  const p = canonical(realPath).replace(/\/+$/, '');
+  const under = (root) => p === root || p.startsWith(root + '/');
+
+  if (APP_DATA_ROOTS.some(under)) {
+    return 'macOS will not let Disk Manager touch another app\'s container folder without '
+      + 'Full Disk Access. Grant it to your terminal and try again — running as admin does not '
+      + 'help, because this is a privacy consent rather than a file permission.';
+  }
+  const dir = PRIVACY_DIRS.find(under);
+  if (dir) {
+    return `macOS gates ${canonical(dir)} behind a privacy consent that Disk Manager does not have. `
+      + 'Grant Full Disk Access to your terminal and try again — running as admin does not help.';
+  }
+  return null;
+}
+
 /** Quarantine must land on the same volume, or a "move" turns into a slow copy. */
 export function sameVolume(a, b) {
   try {

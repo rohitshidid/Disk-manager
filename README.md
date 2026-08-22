@@ -9,7 +9,9 @@ npm start          # then open http://127.0.0.1:4173
 npm run dev        # same, but opens the browser for you
 ```
 
-No dependencies to install. Node 20+ and `ncdu` (`brew install ncdu`).
+No dependencies to install. Node 20+ and `ncdu` (`brew install ncdu`). If 4173
+is taken it walks up until it finds a free port and prints the URL it chose;
+`PORT=…` picks a different starting point.
 
 ---
 
@@ -151,12 +153,13 @@ months+* now means nothing inside changed — not merely that the folder's own
 entry list held still while files under it were being edited.
 
 **Junk finder** — sweeps for the known space sinks on a dev Mac: `node_modules`,
-Xcode `DerivedData` and iOS DeviceSupport, `.venv`, `.next`, `__pycache__`,
-package-manager caches (npm/pnpm/yarn/bun/Homebrew/Gradle/Maven/Cargo/Go), iOS
-backups, Docker images, Trash, and downloads untouched for 90+ days. Each
+Xcode `DerivedData`, iOS DeviceSupport, Archives and simulator devices, `.venv`,
+`.next`, `.turbo`, `__pycache__`, `.pytest_cache`, application caches and logs,
+package-manager caches (npm/pnpm/yarn/bun/Homebrew/Gradle/Maven/Cargo/Go/pip),
+iOS backups, Docker images, Trash, and downloads untouched for 90+ days. Each
 category is labelled `safe` / `caution` / `danger` and says what regenerating it
 costs. Nested hits are dropped, so a `__pycache__` inside a flagged `.venv` is
-not counted twice.
+not counted twice, and anything under 1 MB is left out.
 
 **Duplicates** — byte-identical files. Grouped by size first (different sizes
 can't be duplicates), then a 64 KB head hash, then a full hash only for what

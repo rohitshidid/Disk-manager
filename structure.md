@@ -9,11 +9,11 @@ Disk manager/
 ├── README.md             user-facing guide: how it works, why, gotchas
 ├── structure.md          this file — architecture and invariants
 ├── TODO.md               backlog
-├── server/               Node backend (~2,530 lines)
+├── server/               Node backend (~2,290 lines)
 │   ├── index.js   (682)  HTTP server, routes, auth, tree↔quarantine sync
 │   ├── scanner.js (425)  ncdu process, live tailing, stall detection
-│   ├── quarantine.js(362) delete / undo / redo / restore / purge + manifest
-│   ├── dispose.js  (207) macOS Trash + permanent erase
+│   ├── quarantine.js(373) delete / undo / redo / restore / purge + manifest
+│   ├── dispose.js  (210) macOS Trash + permanent erase
 │   ├── tree.js    (345)  TreeStore (typed arrays) + NcduParser (streaming)
 │   ├── dupes.js   (175)  duplicate finder (size → head hash → full hash)
 │   ├── junk.js    (148)  rules for caches, build artefacts, package stores
@@ -204,7 +204,7 @@ process run and substituted into `index.html` at serve time.
 | `POST /api/scan/skip` | add one folder to the skip list, then rescan |
 | `POST /api/scan/find-blockers` | sweep for blocked folders — **reports only** |
 | `POST /api/scan/apply-blockers` | commit the last sweep's findings |
-| `POST /api/excludes` | overwrite the skip list |
+| `POST /api/excludes` | overwrite the skip list — *not yet called by the UI* |
 | `GET  /api/dir?path=` | one directory: children, crumbs, atimes |
 | `GET  /api/search` | name / size / age query across the tree |
 | `GET  /api/junk` | junk categories |
@@ -230,7 +230,7 @@ process run and substituted into `index.html` at serve time.
 |---|---|
 | `quarantine/<id>/<name>` | deleted items, awaiting restore or purge |
 | `manifest.json` | entries + `undoStack` / `redoStack`; survives restarts |
-| `last-scan.json` | raw ncdu export, reused for instant reload (~145 MB) |
+| `last-scan.json` | raw ncdu export, reused for instant reload (~250 MB here) |
 | `excludes.json` | folders to skip; reapplied to every scan |
 | `.scan-cancel` | sentinel polled by the elevated scan wrapper |
 
@@ -248,6 +248,8 @@ process run and substituted into `index.html` at serve time.
 | `CHUNK` | 64 KB head hash | `dupes.js` |
 | `ATIME_DEADLINE_MS` | 4 s per listing | `index.js` |
 | `ATIME_TOTAL_STATS` / `ATIME_ROW_STATS` | 30,000 / 5,000 | `index.js` |
+| `ATIME_CONCURRENCY` | 32 `lstat`s in flight | `index.js` |
+| rows given an atime per listing | first 600 | `index.js` |
 | `BIG_BYTES` / `MANY_ITEMS` | 1 GiB / 10,000 | `safety.js` |
 
 ---
@@ -267,34 +269,34 @@ process run and substituted into `index.html` at serve time.
    `DELETE` in the UI. Every other path is a rename that can be walked back —
    into the quarantine, where this app can undo it, or into the macOS Trash,
    where Finder can.
-9. **Try root before blaming privacy.** An unwritable parent is an ordinary
+5. **Try root before blaming privacy.** An unwritable parent is an ordinary
    permission problem and root fixes it, including inside a folder that is also
    privacy-gated. Only a path POSIX says is movable, that macOS refused anyway,
    is a TCC refusal — and root cannot lift that one, so it is reported rather
    than prompted for. Reversing the two costs the user an admin prompt on a
    guaranteed refusal, or a wrong explanation on a fixable one.
-10. **The Trash record is memory-only.** `trashedThisRun` in `index.js` is
+6. **The Trash record is memory-only.** `trashedThisRun` in `index.js` is
    never written to disk. Finder can empty the Trash or put an item back
    without telling us, so a record that survived a restart would be asserting
    things about a Trash it has not looked at. Session scope is the honest
-   scope, and the UI says so.
-11. **The atime rollup must never enumerate a directory.** `newestAtime()`
+   scope, and the UI says so. The list is capped at the 500 most recent items.
+7. **The atime rollup must never enumerate a directory.** `newestAtime()`
    takes its descendants from the tree, which already knows them, and only
    ever calls `lstat` — never `readdir`. It also stays inside a deadline and a
    stat budget, and reports `atimeApprox` rather than pretending a truncated
    walk was complete. `lstat` still has no timeout, so the outer
    `Promise.race` is what guarantees the listing returns.
-12. **A node marked gone stays gone.** `syncTree()` reconciles marks against
+8. **A node marked gone stays gone.** `syncTree()` reconciles marks against
    `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
    its bytes handed back to the tree. That is right for a restore and wrong for
    everything else, so trash, erase and purge register the node in `goneNodes`,
    which `syncTree()` folds into its desired set and never clears. Both sets are
    cleared when a scan starts, because the indices belong to the old tree.
-5. **One admin prompt per batch**, never per file. The server itself never runs
+9. **One admin prompt per batch**, never per file. The server itself never runs
    as root.
-6. **Register both path forms when excluding** — `lsof` reports firmlinked
-   `/Users/...` while ncdu walks `/System/Volumes/Data/Users/...`.
-7. **Rejected promises must be caught** in scan start paths; an unhandled
-   rejection is fatal in Node and would take the server down mid-delete.
-8. **`sudo` ≠ privacy consent.** Root reaches other users' files; only Full
-   Disk Access reaches `~/Desktop`, `~/Music`, iCloud Drive and app containers.
+10. **Register both path forms when excluding** — `lsof` reports firmlinked
+    `/Users/...` while ncdu walks `/System/Volumes/Data/Users/...`.
+11. **Rejected promises must be caught** in scan start paths; an unhandled
+    rejection is fatal in Node and would take the server down mid-delete.
+12. **`sudo` ≠ privacy consent.** Root reaches other users' files; only Full
+    Disk Access reaches `~/Desktop`, `~/Music`, iCloud Drive and app containers.

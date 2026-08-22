@@ -13,11 +13,9 @@ See `structure.md` for architecture and the invariants any fix must respect.
       containers behind privacy consent; without it `openat()` blocks forever
       rather than returning an error, and `sudo` does not help.
       Verify with: `ls ~/Library/Application\ Support/com.apple.TCC/ >/dev/null 2>&1 && echo GRANTED || echo NOT GRANTED`
-      As of the last check: **NOT GRANTED**, and the app that needs it is
+      As of 2026-08-21: **NOT GRANTED**, and the app that needs it is
       **Antigravity IDE.app** (the terminal this runs in), not Terminal.app.
       Once granted, re-run a full scan and record the real total in `README.md`.
-
-- [ ] **Decide whether to commit the repo.** It currently has zero commits.
 
 ---
 
@@ -90,7 +88,8 @@ See `structure.md` for architecture and the invariants any fix must respect.
 
 ## Low — nice to have
 
-- [ ] **Compress the scan cache.** `last-scan.json` is ~145 MB uncompressed.
+- [ ] **Compress the scan cache.** `last-scan.json` is ~250 MB uncompressed
+      on this machine and grows with the tree.
       ncdu supports `-c` (zstd) and Node ≥23.8 has zstd streams, which should
       cut it by roughly an order of magnitude.
 - [ ] **Junk finder hides small fry.** The 1 MB floor means 8,819 `__pycache__`
@@ -149,6 +148,8 @@ Kept for context — these were built and verified against real data.
 - [x] Column sorting — click any heading, click again to reverse; size
       descending by default; missing values always sort last
 - [x] Fixed: purge un-marked its nodes, so the tree handed purged bytes back
+- [x] Committed the repo and pushed it to `origin`
+      (`git@github.com:rohitshidid/Disk-manager.git`)
 - [x] Name TCC refusals properly (`~/Library/Containers` and friends) instead
       of "may be protected, in use, or on a volume with no Trash", and stop
       spending an admin prompt on a refusal root cannot lift

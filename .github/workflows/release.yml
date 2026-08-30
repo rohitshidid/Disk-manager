@@ -1,0 +1,76 @@
+name: Build and publish the DMG
+
+# Tag a commit to cut a release:
+#
+#   npm version minor && git push --follow-tags
+#
+# The website's Download button points at this repository's *latest* release
+# asset, so publishing here is what updates the download — the site itself does
+# not need to be touched.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the release and attach the DMG
+
+jobs:
+  dmg:
+    # An Apple-silicon runner, because the DMG bundles an arm64 ncdu taken from
+    # this machine's Homebrew. Building on an Intel runner would produce a DMG
+    # whose scanner cannot run on the machines it is aimed at.
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install ncdu
+        run: brew install ncdu
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the tests
+        run: npm test
+
+      - name: Vendor ncdu, draw the icon, build the DMG
+        run: npm run dist
+
+      - name: Check the bundle is signed and self-contained
+        run: |
+          APP="release/mac-arm64/Disk Manager.app"
+          # Ad-hoc is all an unsigned build gets, but it has to verify: an
+          # arm64 bundle whose signature does not check out will not launch.
+          codesign --verify --deep --strict "$APP"
+          # And ncdu has to run without Homebrew present, which is the whole
+          # point of vendoring it.
+          "$APP/Contents/Resources/bin/ncdu" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiskManager-dmg
+          path: release/*.dmg
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.dmg
+          generate_release_notes: true
+          body: |
+            **Apple silicon (arm64), unsigned.**
+
+            macOS will refuse the first launch because the app is not signed by
+            an identified developer. To open it: right-click **Disk Manager** in
+            Applications → **Open** → **Open**. You only do this once.
+
+            Nothing needs to be installed first — Node and `ncdu` are inside the
+            bundle. Grant **Full Disk Access** to Disk Manager before the first
+            scan, or macOS will hang the scan on folders it is withholding
+            consent for.

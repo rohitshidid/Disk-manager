@@ -135,7 +135,41 @@ const state = {
   sort: { key: 'size', dir: 'desc' },
   tab: 'explore',
   pollTimer: null,
+  refreshTimer: null,
+  excludes: [],
+  focused: null,
 };
+
+/**
+ * Show a path in Finder, or preview it the way the space bar does.
+ *
+ * Both are read-only, so neither goes through the confirmation machinery --
+ * the point of them is to let someone check what a folder actually is before
+ * deciding to remove it, which is the moment a confirmation dialog is least
+ * able to help.
+ */
+/** Wire every `data-path` row inside `root` to Finder and Quick Look. One
+ *  delegated listener, so a category with 200 rows still costs one handler. */
+function wireItemActions(root) {
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('.item-actions button');
+    if (!btn) return;
+    e.stopPropagation();
+    const path = btn.closest('[data-path]')?.dataset.path;
+    if (!path) return;
+    if (btn.classList.contains('look')) previewPath(path);
+    else revealPath(path);
+  });
+}
+
+async function revealPath(p) {
+  try { await api('/api/reveal', { method: 'POST', body: { path: p } }); }
+  catch (err) { toast(err.message, 'err'); }
+}
+async function previewPath(p) {
+  try { await api('/api/quicklook', { method: 'POST', body: { path: p } }); }
+  catch (err) { toast(err.message, 'err'); }
+}
 
 /* --------------------------------------------------------------- chrome */
 
@@ -168,6 +202,20 @@ function renderStatus() {
     $('projection').textContent = q.reclaimable.bytes > 0
       ? `→ ${fmt(disk.availAfterPurge)} free after purge`
       : '';
+  }
+
+  // Refresh chrome. A refresh is a scan of one folder, so it gets the same
+  // bar -- but its own, because the two can be told apart and cancelling one
+  // must never reach the other.
+  const ref = s.refresh;
+  const refreshing = ref && ref.status === 'running';
+  $('refreshBar').classList.toggle('hidden', !refreshing);
+  $('refreshDir').disabled = !!refreshing;
+  if (refreshing) {
+    const secs = Math.round(ref.elapsedMs / 1000);
+    $('refreshText').textContent = ref.stalledMs
+      ? `Re-measuring ${ref.path} — nothing has arrived for ${Math.round(ref.stalledMs / 1000)}s. macOS may be withholding privacy consent for something inside it; Cancel and grant Full Disk Access.`
+      : `Re-measuring ${ref.path} — ${ref.items.toLocaleString()} items, ${fmt(ref.bytes)}, ${secs}s`;
   }
 
   // Scan chrome
@@ -329,13 +377,99 @@ function poll() {
   }, 600);
 }
 
+/* ------------------------------------------------------- folder refresh */
+
+/**
+ * Re-measure the folder on screen instead of the whole volume.
+ *
+ * A full scan of the data volume is minutes; one project folder is seconds.
+ * The server splices the new measurement into the tree it already has, so the
+ * ancestors, the treemap and the free-space projection all stay correct
+ * without anything else being re-read.
+ */
+async function refreshCurrentFolder() {
+  if (!state.dir) { toast('Open a folder first.', 'err'); return; }
+  const target = state.dir.node.path;
+  if (target === state.dir.rootPath) { toast('This is the scan root — use Scan disk to measure the whole volume.', 'err'); return; }
+  try {
+    await api('/api/refresh', { method: 'POST', body: { path: target } });
+    pollRefresh(target);
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+function pollRefresh(target) {
+  clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(async () => {
+    const s = await refreshState().catch(() => null);
+    if (!s || s.refresh.status === 'running') return;
+    clearInterval(state.refreshTimer);
+    const r = s.refresh;
+    if (r.status === 'ready') {
+      const delta = r.delta;
+      // The delta is the whole point: it says what changed since the scan,
+      // which a re-rendered list on its own does not.
+      const verdict = delta === 0 ? 'unchanged'
+        : delta < 0 ? `${fmt(-delta)} smaller than the scan said`
+        : `${fmt(delta)} larger than the scan said`;
+      toast(`${r.path} re-measured — ${fmt(r.sizeAfter)}, ${verdict}`, 'ok');
+      await reloadCurrent();
+    } else if (r.status === 'error') {
+      toast(`Refresh failed: ${r.error}`, 'err');
+    } else if (r.status === 'cancelled') {
+      toast('Refresh cancelled — the folder still shows its size from the last full scan.');
+    }
+  }, 500);
+}
+
+/* ------------------------------------------------------------- settings */
+
+/**
+ * The skip list, which until now was only ever mentioned in a toast.
+ *
+ * Every entry is a permanent hole in the totals. Showing them somewhere they
+ * can be removed is the difference between a number that is explained and a
+ * number that is quietly wrong.
+ */
+async function openSettings() {
+  const s = state.server || await refreshState();
+  state.excludes = [...(s.excludes || [])];
+  renderExcludes();
+  $('settingsDlg').showModal();
+}
+
+function renderExcludes() {
+  const el = $('excludeList');
+  el.innerHTML = '';
+  if (!state.excludes.length) {
+    el.innerHTML = '<div class="empty">Nothing is being skipped — every folder the scan could read is in your totals.</div>';
+    $('excludeNote').textContent = '';
+    $('settingsSave').disabled = true;
+    return;
+  }
+  for (const p of state.excludes) {
+    const row = document.createElement('div');
+    row.className = 'exclude-row';
+    row.innerHTML = `<span class="path">${esc(p)}</span><button class="btn small ghost">Remove</button>`;
+    row.querySelector('button').onclick = () => {
+      state.excludes = state.excludes.filter((x) => x !== p);
+      renderExcludes();
+    };
+    el.append(row);
+  }
+  const original = (state.server?.excludes || []).length;
+  $('excludeNote').textContent = state.excludes.length === original
+    ? `${state.excludes.length} folder(s) skipped. Removing one only takes effect on the next scan.`
+    : `${original - state.excludes.length} folder(s) will be measured again on the next scan.`;
+  $('settingsSave').disabled = false;
+}
+
 async function onScanReady() {
   const s = state.server;
   if (s.scan.readErrors > 200) {
     toast(`${s.scan.readErrors.toLocaleString()} folders could not be read, so their size is missing from the totals. Admin rights cover system and other users' folders; Full Disk Access covers Desktop, Documents, Downloads, Music and Pictures.`);
   }
   if (s.excludes?.length) {
-    toast(`${s.excludes.length} folder(s) are on your skip list and were not counted.`);
+    toast(`${s.excludes.length} folder(s) are on your skip list and were not counted — open ⚙︎ to see or remove them.`);
   }
   if (state.tab === 'junk') loadJunk();
 }
@@ -348,6 +482,10 @@ async function openDir(path) {
     state.dir = data;
     state.searchMode = false;
     state.selected.clear();
+    // The header checkbox is not bound to the selection, so leaving it ticked
+    // after a navigation claims a selection that was just cleared.
+    $('checkAll').checked = false;
+    state.focused = null;
     renderCrumbs(data.crumbs);
     renderRows(data.children, data.node.size, data.truncated);
     renderTreemap(data.node, data.children);
@@ -444,6 +582,8 @@ function renderRows(children, parentSize, truncated = 0) {
       <span class="c-date">${c.isDir ? fmtDate(c.ownMtime) : ''}</span>
       <span class="c-date">${c.atimeApprox && c.atime ? '<span class="approx">~</span>' : ''}${fmtDate(c.atime)}</span>
       <span class="row-actions">
+        <button class="look" title="Preview with Quick Look (space)">Look</button>
+        <button class="show" title="Reveal in Finder">Finder</button>
         <button class="trash" title="Move to the macOS Trash">Trash</button>
         <button class="del" title="Move to Disk Manager's bin (undoable with ⌘Z)">Bin</button>
       </span>`;
@@ -456,6 +596,11 @@ function renderRows(children, parentSize, truncated = 0) {
     if (c.isDir) row.querySelector('.c-name').onclick = () => openDir(c.path);
     row.querySelector('.del').onclick = (e) => { e.stopPropagation(); requestRemoval([c.path], 'bin'); };
     row.querySelector('.trash').onclick = (e) => { e.stopPropagation(); requestRemoval([c.path], 'trash'); };
+    row.querySelector('.show').onclick = (e) => { e.stopPropagation(); revealPath(c.path); };
+    row.querySelector('.look').onclick = (e) => { e.stopPropagation(); previewPath(c.path); };
+    // Clicking a row makes it the focused one, so the space bar can preview it
+    // the way it does in Finder.
+    row.onclick = () => { state.focused = c.path; for (const r of el.children) r.classList.remove('focus'); row.classList.add('focus'); };
     frag.append(row);
   }
   el.append(frag);
@@ -839,7 +984,7 @@ async function loadJunk() {
         </div>
         <div class="junk-why">${esc(cat.why)}</div>
         <div class="junk-items hidden">
-          ${cat.items.map((i) => `<div class="junk-item"><span class="path">${esc(i.path)}</span><span class="sz">${fmt(i.size)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(i.mtime)}</span></div>`).join('')}
+          ${cat.items.map((i) => `<div class="junk-item" data-path="${esc(i.path)}"><span class="path">${esc(i.path)}</span><span class="sz">${fmt(i.size)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(i.mtime)}</span><span class="item-actions"><button class="look">Look</button><button class="show">Finder</button></span></div>`).join('')}
         </div>`;
       const items = d.querySelector('.junk-items');
       d.querySelector('.junk-head').onclick = (e) => {
@@ -852,6 +997,7 @@ async function loadJunk() {
           requestRemoval(cat.items.map((i) => i.path), mode);
         };
       }
+      wireItemActions(items);
       el.append(d);
     }
   } catch (err) {
@@ -961,8 +1107,9 @@ function renderDupes(groups) {
         // Pre-tick everything except the oldest copy, so the default matches
         // what Quick Delete Duplicates would do.
         const keep = oldestFirst(g.files)[0];
-        return g.files.map((f) => `<div class="dupe-file"><input type="checkbox" ${f === keep ? '' : 'checked'}><span class="path">${esc(f.path)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(f.mtime)}</span>${f === keep ? '<span class="keeper">oldest — kept</span>' : ''}</div>`).join('');
+        return g.files.map((f) => `<div class="dupe-file" data-path="${esc(f.path)}"><input type="checkbox" ${f === keep ? '' : 'checked'}><span class="path">${esc(f.path)}</span><span class="sz" style="color:var(--muted);font-size:12px">${fmtDate(f.mtime)}</span>${f === keep ? '<span class="keeper">oldest — kept</span>' : ''}<span class="item-actions"><button class="look">Look</button><button class="show">Finder</button></span></div>`).join('');
       })()}`;
+    wireItemActions(d);
     for (const [sel, mode] of [['.g-trash', 'trash'], ['.g-bin', 'bin']]) {
       d.querySelector(sel).onclick = () => {
         const boxes = [...d.querySelectorAll('.dupe-file input')];
@@ -1008,6 +1155,19 @@ $('restoreSel').onclick = async () => {
   } catch (err) { toast(err.message, 'err'); }
 };
 $('openTrash').onclick = () => api('/api/open-trash', { method: 'POST' });
+$('refreshDir').onclick = refreshCurrentFolder;
+$('cancelRefresh').onclick = () => api('/api/refresh/cancel', { method: 'POST' }).catch(() => {});
+$('settingsBtn').onclick = openSettings;
+$('settingsClose').onclick = () => $('settingsDlg').close();
+$('fdaFromSettings').onclick = () => api('/api/privacy-settings', { method: 'POST' });
+$('settingsSave').onclick = async () => {
+  try {
+    await api('/api/excludes', { method: 'POST', body: { excludes: state.excludes, rescan: true } });
+    $('settingsDlg').close();
+    toast('Skip list saved — rescanning so the totals reflect it.');
+    poll();
+  } catch (err) { toast(err.message, 'err'); }
+};
 $('junkRefresh').onclick = loadJunk;
 $('dupeStart').onclick = startDupes;
 $('dupeQuick').onclick = quickDeleteDupes;
@@ -1040,6 +1200,11 @@ $('checkAll').onchange = (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.metaKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
   if (e.key === '/' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); $('search').focus(); }
+  // Space previews the focused row, the way it does in Finder.
+  if (e.key === ' ' && document.activeElement.tagName !== 'INPUT' && state.focused) {
+    e.preventDefault();
+    previewPath(state.focused);
+  }
   if (e.key === 'Backspace' && document.activeElement.tagName !== 'INPUT' && state.dir) {
     const crumbs = state.dir.crumbs;
     if (crumbs.length > 1) openDir(crumbs[crumbs.length - 2].path);

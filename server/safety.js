@@ -38,10 +38,23 @@ export function assess(realPath, { size = 0, items = 0 } = {}) {
       return { level: 'blocked', reason: `${pre} is protected by macOS System Integrity Protection; deleting inside it would not work and could break the OS.`, confirm };
     }
   }
-  // Guard the app's own state -- deleting an ancestor of it would eat the bin.
+  // Guard the app's own state, in both directions.
+  //
+  // Above: deleting an ancestor of the quarantine eats the bin and the
+  // manifest with it, and every undo the user still had.
+  //
+  // Inside: a quarantined item selected in Explore and sent to the bin would
+  // be renamed *within* the quarantine, leaving the manifest pointing at a
+  // path that no longer exists -- a restore that reports the copy as gone,
+  // for an item sitting right there. The bin's own Restore, Trash and Purge
+  // work from the manifest and do not come through here, so they are
+  // unaffected: this only refuses the routes that treat it as ordinary disk.
   const appCanon = canonical(APP_DIR);
   if (p === appCanon || appCanon.startsWith(p + '/')) {
     return { level: 'blocked', reason: 'That path contains Disk Manager\'s own quarantine. Removing it would destroy your undo history.', confirm };
+  }
+  if (p.startsWith(appCanon + '/')) {
+    return { level: 'blocked', reason: 'That is inside Disk Manager\'s own quarantine. Use the Bin tab to restore or purge it.', confirm };
   }
   if (p === canonical(HOME) || canonical(HOME).startsWith(p + '/')) {
     return { level: 'blocked', reason: 'That path contains your home folder.', confirm };

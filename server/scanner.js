@@ -188,6 +188,11 @@ export function isPrivacyProtected(p) {
 }
 
 function findNcdu() {
+  // The desktop build ships its own copy inside the .app bundle, so a user who
+  // has never heard of Homebrew still gets a working scan. It wins over
+  // anything installed, which also keeps the packaged app on a version it was
+  // actually tested against.
+  if (process.env.DM_NCDU && fs.existsSync(process.env.DM_NCDU)) return process.env.DM_NCDU;
   for (const p of ['/opt/homebrew/bin/ncdu', '/usr/local/bin/ncdu', '/usr/bin/ncdu']) {
     if (fs.existsSync(p)) return p;
   }

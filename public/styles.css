@@ -321,3 +321,37 @@ main { flex: 1; overflow: hidden; display: flex; }
 .scanbar[data-mode="stalled"] { background: var(--danger-soft); }
 .scanbar code { font-family: var(--mono); font-size: 11.5px; background: rgba(127,127,127,.16); padding: 1px 5px; border-radius: 4px; }
 .stall-msg { min-width: 320px; }
+
+/* ---------- folder refresh, skip list, row previews ---------- */
+
+/* A refresh is a scan of one folder, so it reuses the scan bar -- tinted
+   differently, because the two run independently and cancelling the wrong one
+   costs minutes. */
+.scanbar.refresh { background: var(--surface-2); }
+
+.row.focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.row-actions .show { background: var(--muted); }
+.row-actions .look { background: var(--accent); }
+
+/* Finder / Quick Look on junk and duplicate rows. Hidden until the row is
+   hovered, so a 200-row category still reads as a list of paths. */
+.item-actions { display: flex; gap: 4px; opacity: 0; flex-shrink: 0; }
+.junk-item:hover .item-actions, .dupe-file:hover .item-actions { opacity: 1; }
+.item-actions button {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+  border-radius: 6px; padding: 1px 7px; font-size: 11px; cursor: pointer;
+}
+.item-actions button:hover { color: var(--text); border-color: var(--accent); }
+
+.dlg.wide { max-width: 680px; }
+.dlg-note { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; line-height: 1.5; }
+.exclude-list {
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+}
+.exclude-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+}
+.exclude-row:last-child { border-bottom: 0; }
+.exclude-row .path { flex: 1; }

@@ -1,13 +1,98 @@
 {
   "name": "disk-manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Visual disk usage explorer for macOS with reversible deletes",
+  "license": "MIT",
   "type": "module",
-  "main": "server/index.js",
+  "main": "electron/main.js",
+  "homepage": "https://rohitshidid.github.io/Disk-manager/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rohitshidid/Disk-manager.git"
+  },
   "scripts": {
     "start": "node --max-old-space-size=4096 server/index.js",
-    "dev": "node --max-old-space-size=4096 server/index.js --open"
+    "dev": "node --max-old-space-size=4096 server/index.js --open",
+    "app": "electron .",
+    "test": "node --test test/*.test.js",
+    "icon": "node build/make-icon.mjs",
+    "vendor:ncdu": "node build/bundle-ncdu.mjs",
+    "prep": "npm run icon && npm run vendor:ncdu",
+    "dist": "npm run prep && electron-builder --mac dmg",
+    "pack": "npm run prep && electron-builder --mac dir"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.rohitshidid.diskmanager",
+    "productName": "Disk Manager",
+    "copyright": "MIT licensed",
+    "asar": false,
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/bin",
+        "to": "bin"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "Disk Manager measures the size of your Desktop so it can show you what is using space.",
+        "NSDocumentsFolderUsageDescription": "Disk Manager measures the size of your Documents folder so it can show you what is using space.",
+        "NSDownloadsFolderUsageDescription": "Disk Manager measures the size of your Downloads folder so it can show you what is using space.",
+        "NSRemovableVolumesUsageDescription": "Disk Manager measures external drives so it can show you what is using space on them.",
+        "NSSystemAdministrationUsageDescription": "Disk Manager asks for administrator access only to move or delete files outside your home folder, one prompt per batch.",
+        "LSMinimumSystemVersion": "11.0"
+      }
+    },
+    "dmg": {
+      "title": "Disk Manager ${version}",
+      "artifactName": "DiskManager-${arch}.dmg",
+      "contents": [
+        {
+          "x": 150,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 420,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "afterPack": "build/after-pack.cjs"
+  }
 }

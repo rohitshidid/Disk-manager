@@ -59,7 +59,7 @@ export function findJunk(tree, { minSize = 1024 * 1024 } = {}) {
   const hits = [];
   const seen = new Set();
   const push = (rule, idx) => {
-    if (tree.isDeleted(idx)) return;
+    if (tree.isDeleted(idx) || tree.isStale(idx)) return;
     if (seen.has(idx)) return;
     if (tree.subD[idx] < minSize) return;
     seen.add(idx);
@@ -82,6 +82,10 @@ export function findJunk(tree, { minSize = 1024 * 1024 } = {}) {
   for (const r of BY_NAME) nameRules.set(r.name, r);
   const homeReal = tree.findByPath(canonical(HOME));
   for (let i = 1; i < tree.n; i++) {
+    // Skip the branches a per-folder refresh detached: they are still in the
+    // arrays but no longer part of the tree, and counting them would double
+    // every hit inside a refreshed folder.
+    if (tree.isStale(i)) continue;
     if (!(tree.flags[i] & F_DIR)) continue;
     for (const [name, rule] of nameRules) {
       if (!tree.nameIs(i, name)) continue;

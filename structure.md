@@ -9,9 +9,10 @@ Disk manager/
 ├── README.md             user-facing guide: how it works, why, gotchas
 ├── structure.md          this file — architecture and invariants
 ├── TODO.md               backlog
-├── server/               Node backend (~2,290 lines)
-│   ├── index.js   (682)  HTTP server, routes, auth, tree↔quarantine sync
-│   ├── scanner.js (425)  ncdu process, live tailing, stall detection
+├── server/               Node backend (~2,700 lines)
+│   ├── index.js   (770)  HTTP server, routes, auth, tree↔quarantine sync
+│   ├── scanner.js (463)  ncdu process, live tailing, stall detection
+│   ├── refresh.js (165)  re-measure one folder and splice it into the tree
 │   ├── quarantine.js(373) delete / undo / redo / restore / purge + manifest
 │   ├── dispose.js  (210) macOS Trash + permanent erase
 │   ├── tree.js    (345)  TreeStore (typed arrays) + NcduParser (streaming)
@@ -20,11 +21,21 @@ Disk manager/
 │   ├── util.js     (76)  paths, formatting, df, shell quoting
 │   ├── safety.js  (157)  blocklist, risk assessment, batch screening, TCC
 │   └── elevate.js  (43)  one native admin prompt per batch
-└── public/               frontend, vanilla ES modules (~1,640 lines)
-    ├── app.js    (1069)  all UI logic and state
-    ├── styles.css (323)  theme-aware styling, light + dark
-    ├── index.html (194)  markup shell; `__TOKEN__` is substituted at serve time
-    └── treemap.js  (53)  squarified treemap layout
+├── public/               frontend, vanilla ES modules (~1,900 lines)
+│   ├── app.js    (1240)  all UI logic and state
+│   ├── styles.css (355)  theme-aware styling, light + dark
+│   ├── index.html (215)  markup shell; `__TOKEN__` is substituted at serve time
+│   └── treemap.js  (53)  squarified treemap layout
+├── electron/             desktop shell
+│   └── main.js           starts the server as a child, opens the window
+├── build/                packaging
+│   ├── make-icon.mjs     draws icon.icns — rasteriser + PNG encoder, no deps
+│   ├── bundle-ncdu.mjs   vendors ncdu + dylibs, relinks to @loader_path
+│   ├── after-pack.cjs    ad-hoc signs the packed bundle
+│   ├── entitlements.mac.plist
+│   └── NOTES.md          why the packaging is configured this way
+├── test/                 node --test, 33 tests, no framework
+└── docs/                 the website, served by GitHub Pages
 ```
 
 ---
@@ -133,6 +144,27 @@ consent for. This subsystem exists entirely to survive that.
 - `surveyBlockers()` sweeps common hotspots two levels deep (sandbox containers
   gate at `<app>/Data`) so the user is interrupted once instead of per folder.
 
+### `refresh.js` — measuring one folder again
+
+A full scan is minutes; a project folder is seconds. `FolderRefresher` runs ncdu
+with the *same* flags, skip list and cancellable wrapper the full scan uses — so
+a folder measures the same either way — parses the result into its own
+`TreeStore`, and hands it to `TreeStore.spliceSubtree()`.
+
+It keeps its own export file and its own cancel sentinel. `last-scan.json` has
+to survive a refresh or reopening the app would reload one folder instead of the
+volume, and a shared sentinel would let cancelling a refresh stop a full scan
+that happened to be running.
+
+`spliceSubtree()` **appends** the new nodes rather than overwriting the old ones,
+which is what preserves the invariant everything else rests on: a child always
+sits at a higher index than its parent. The replaced branch is unlinked and
+flagged `F_STALE` rather than removed — half the app holds node indices, and
+compacting the arrays would renumber every one of them. Sizes bubble up as a
+delta; the newest-mtime rollup cannot, because if the newest file under there
+was deleted the ancestors' value has to come *down*, so each ancestor is
+recomputed from its own children along the one path to the root.
+
 ### `quarantine.js`
 
 Deletes are renames into `~/Library/Application Support/DiskManager/quarantine/<id>/<name>`
@@ -204,7 +236,9 @@ process run and substituted into `index.html` at serve time.
 | `POST /api/scan/skip` | add one folder to the skip list, then rescan |
 | `POST /api/scan/find-blockers` | sweep for blocked folders — **reports only** |
 | `POST /api/scan/apply-blockers` | commit the last sweep's findings |
-| `POST /api/excludes` | overwrite the skip list — *not yet called by the UI* |
+| `POST /api/excludes` | overwrite the skip list; `{rescan:true}` starts a scan |
+| `POST /api/refresh` | re-measure one folder and splice it in |
+| `POST /api/refresh/cancel` | writes the refresh sentinel |
 | `GET  /api/dir?path=` | one directory: children, crumbs, atimes |
 | `GET  /api/search` | name / size / age query across the tree |
 | `GET  /api/junk` | junk categories |
@@ -218,7 +252,8 @@ process run and substituted into `index.html` at serve time.
 | `POST /api/undo` · `/api/redo` | move an operation between stacks |
 | `POST /api/restore` · `/api/purge` | per-item restore; irreversible erase |
 | `POST /api/privacy-settings` | open the Full Disk Access pane |
-| `POST /api/reveal` | reveal a path in Finder — *not yet called by the UI* |
+| `POST /api/reveal` | reveal a path in Finder |
+| `POST /api/quicklook` | preview a path with `qlmanage -p` |
 
 ---
 
@@ -231,6 +266,8 @@ process run and substituted into `index.html` at serve time.
 | `quarantine/<id>/<name>` | deleted items, awaiting restore or purge |
 | `manifest.json` | entries + `undoStack` / `redoStack`; survives restarts |
 | `last-scan.json` | raw ncdu export, reused for instant reload (~250 MB here) |
+| `refresh-scan.json` | one folder's export; deleted after the splice |
+| `.refresh-cancel` | sentinel for a refresh, kept separate from `.scan-cancel` |
 | `excludes.json` | folders to skip; reapplied to every scan |
 | `.scan-cancel` | sentinel polled by the elevated scan wrapper |
 
@@ -244,6 +281,7 @@ process run and substituted into `index.html` at serve time.
 | `FIRST_PASS_MS` / `CONFIRM_MS` | 3 s suspect / 12 s verdict | `scanner.js` |
 | `MAX_SURVEY_DEPTH` | 2 | `scanner.js` |
 | `MAX_SURVEY_PROBES` / `MAX_CONFIRMS` | 600 / 80 | `scanner.js` |
+| `STALL_MS` (refresh) | 20 s with no export growth | `refresh.js` |
 | `MAX_NODES` | 12,000,000 | `tree.js` |
 | `CHUNK` | 64 KB head hash | `dupes.js` |
 | `ATIME_DEADLINE_MS` | 4 s per listing | `index.js` |
@@ -286,12 +324,15 @@ process run and substituted into `index.html` at serve time.
    stat budget, and reports `atimeApprox` rather than pretending a truncated
    walk was complete. `lstat` still has no timeout, so the outer
    `Promise.race` is what guarantees the listing returns.
-8. **A node marked gone stays gone.** `syncTree()` reconciles marks against
-   `quarantine.live()`, so an item that leaves the quarantine gets un-marked and
-   its bytes handed back to the tree. That is right for a restore and wrong for
-   everything else, so trash, erase and purge register the node in `goneNodes`,
-   which `syncTree()` folds into its desired set and never clears. Both sets are
-   cleared when a scan starts, because the indices belong to the old tree.
+8. **A node marked gone stays gone, and is remembered by path.** `syncTree()`
+   reconciles marks against `quarantine.live()`, so an item that leaves the
+   quarantine gets un-marked and its bytes handed back to the tree. That is
+   right for a restore and wrong for everything else, so trash, erase and purge
+   register the path in `gonePaths`, which `syncTree()` resolves and folds into
+   its desired set on every pass. **Paths, not indices**: a refresh appends new
+   nodes and detaches the old ones, so an index taken beforehand would afterwards
+   address a stale branch and the subtraction would land somewhere nobody can
+   see. Both sets are cleared when a scan starts.
 9. **One admin prompt per batch**, never per file. The server itself never runs
    as root.
 10. **Register both path forms when excluding** — `lsof` reports firmlinked
@@ -300,3 +341,18 @@ process run and substituted into `index.html` at serve time.
     rejection is fatal in Node and would take the server down mid-delete.
 12. **`sudo` ≠ privacy consent.** Root reaches other users' files; only Full
     Disk Access reaches `~/Desktop`, `~/Music`, iCloud Drive and app containers.
+13. **Anything walking the arrays by index must skip `F_STALE`.** A refresh
+    leaves the branch it replaced in the arrays, unlinked from the root. Walks
+    that follow child links are safe by construction; `findJunk()` and
+    `/api/search` are not, and would otherwise report everything inside a
+    refreshed folder twice, at two different sizes. There is a test for this.
+14. **Validate a refresh in the route, not only in `FolderRefresher`.** Its own
+    guards throw before it has touched its state, so a refusal raised in there
+    leaves `progress()` reporting what the *previous* refresh did — and a client
+    polling for completion reads that stale `ready` as this one succeeding.
+15. **The quarantine is blocked in both directions.** `assess()` refuses paths
+    at, above *and* inside it. Above: deleting an ancestor eats the manifest.
+    Inside: a quarantined item re-binned from Explore would be renamed within
+    the quarantine, leaving the manifest pointing at a path that had moved. The
+    Bin tab's own actions work from the manifest and never come through
+    `assess()`, so they are unaffected.

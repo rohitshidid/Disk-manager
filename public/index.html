@@ -17,6 +17,7 @@
     <button id="undoBtn" class="btn ghost" disabled title="Undo (⌘Z)">↺ Undo</button>
     <button id="redoBtn" class="btn ghost" disabled title="Redo (⇧⌘Z)">↻ Redo</button>
   </div>
+  <button id="settingsBtn" class="btn ghost" title="Skip list and scan settings">⚙︎</button>
   <button id="scanBtn" class="btn primary">Scan disk</button>
 </header>
 
@@ -24,6 +25,13 @@
   <div class="spinner"></div>
   <span id="scanText">Scanning…</span>
   <button id="cancelScan" class="btn ghost small">Cancel</button>
+</div>
+
+<div id="refreshBar" class="scanbar refresh hidden">
+  <div class="spinner"></div>
+  <span id="refreshText">Re-measuring…</span>
+  <span class="spacer" style="flex:1"></span>
+  <button id="cancelRefresh" class="btn ghost small">Cancel</button>
 </div>
 
 <nav class="tabs" id="tabs">
@@ -38,6 +46,7 @@
   <section class="view active" id="view-explore">
     <div class="toolbar">
       <nav class="crumbs" id="crumbs"></nav>
+      <button id="refreshDir" class="btn ghost small" title="Re-measure this folder without rescanning the whole volume">↻ Refresh folder</button>
       <div class="spacer"></div>
       <input id="search" class="input" type="search" placeholder="Search all files…  ( / )">
       <select id="olderThan" class="input narrow" title="Only show items untouched for at least this long">
@@ -184,6 +193,24 @@
   <div class="dlg-actions">
     <button id="dlgCancel" class="btn ghost">Cancel</button>
     <button id="dlgOk" class="btn danger">Confirm</button>
+  </div>
+</dialog>
+
+<dialog id="settingsDlg" class="dlg wide">
+  <h3>Skipped folders</h3>
+  <p class="dlg-note">
+    Folders on this list are not measured, so their size is missing from every
+    total you see — silently, and for as long as they stay here. They get added
+    when a scan wedges inside one and you choose to skip it. Granting Full Disk
+    Access is the better fix: it makes the skip unnecessary.
+  </p>
+  <div id="excludeList" class="exclude-list"></div>
+  <p class="dlg-note" id="excludeNote"></p>
+  <div class="dlg-actions">
+    <button id="fdaFromSettings" class="btn ghost">Open Full Disk Access…</button>
+    <span class="spacer" style="flex:1"></span>
+    <button id="settingsClose" class="btn ghost">Close</button>
+    <button id="settingsSave" class="btn primary">Save &amp; rescan</button>
   </div>
 </dialog>
 

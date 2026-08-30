@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk Manager — see where your Mac's disk went, and take it back</title>
+<meta name="description" content="A visual disk-usage explorer for macOS. Scans the volume your data actually lives on, shows what is using the space, and deletes reversibly — nothing is erased unless you say so in as many words.">
+<link rel="icon" href="icon.png">
+<meta property="og:title" content="Disk Manager for macOS">
+<meta property="og:description" content="See where your disk went, and take it back. Reversible deletes, a junk finder, a duplicate finder, and an undo that survives a restart.">
+<meta property="og:image" content="icon.png">
+<meta property="og:type" content="website">
+<style>
+  /* Light is the definition; dark only re-points the tokens, so nothing can
+     end up with a colour that exists in one theme and not the other. */
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-2: #eef1f5;
+    --text: #12161d;
+    --muted: #5c6673;
+    --faint: #98a2b0;
+    --border: #dfe3ea;
+    --accent: #2563eb;
+    --accent-soft: #e5edfd;
+    --safe: #12855c;
+    --warn: #b06a00;
+    --danger: #c2352b;
+    --shadow: 0 12px 34px rgba(15, 25, 45, .10);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1016;
+      --surface: #151a23;
+      --surface-2: #1c222d;
+      --text: #e9edf3;
+      --muted: #97a2b2;
+      --faint: #6b7686;
+      --border: #262e3b;
+      --accent: #5b8cff;
+      --accent-soft: #16233d;
+      --safe: #34d399;
+      --warn: #f0a538;
+      --danger: #f2726a;
+      --shadow: 0 14px 40px rgba(0, 0, 0, .45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1016; --surface: #151a23; --surface-2: #1c222d;
+    --text: #e9edf3; --muted: #97a2b2; --faint: #6b7686; --border: #262e3b;
+    --accent: #5b8cff; --accent-soft: #16233d; --safe: #34d399;
+    --warn: #f0a538; --danger: #f2726a; --shadow: 0 14px 40px rgba(0,0,0,.45);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); }
+  h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 12px; }
+  h2 { font-size: 30px; margin-top: 8px; }
+  h3 { font-size: 18px; }
+  p { margin: 0 0 16px; }
+  code, kbd { font-family: var(--mono); font-size: .88em; background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
+  kbd { border: 1px solid var(--border); }
+  section { padding: 64px 0; border-top: 1px solid var(--border); }
+  .lede { font-size: 18px; color: var(--muted); max-width: 68ch; }
+
+  /* ---------- header ---------- */
+  header.bar {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: saturate(160%) blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+  .bar-in { display: flex; align-items: center; gap: 12px; height: 60px; }
+  .bar img { width: 26px; height: 26px; border-radius: 6px; }
+  .bar strong { font-size: 15px; letter-spacing: -0.01em; }
+  .bar nav { margin-left: auto; display: flex; gap: 20px; font-size: 14px; }
+  .bar nav a { color: var(--muted); text-decoration: none; }
+  .bar nav a:hover { color: var(--text); }
+  @media (max-width: 720px) { .bar nav a.hide-sm { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 76px 0 56px; }
+  .hero h1 { font-size: clamp(38px, 6vw, 60px); }
+  .hero .lede { font-size: 20px; margin-bottom: 28px; }
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 13px 22px; border-radius: 11px; font-size: 15.5px; font-weight: 600;
+    text-decoration: none; border: 1px solid transparent; cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); color: #fff; box-shadow: var(--shadow); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { border-color: var(--border); color: var(--text); background: var(--surface); }
+  .btn.ghost:hover { border-color: var(--accent); }
+  .sub { font-size: 13px; color: var(--faint); margin-top: 12px; }
+
+  /* ---------- the app illustration ---------- */
+  .shot {
+    margin-top: 48px; border: 1px solid var(--border); border-radius: 14px;
+    background: var(--surface); box-shadow: var(--shadow); overflow: hidden;
+    font-size: 12px;
+  }
+  .shot .chrome { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); opacity: .55; }
+  .shot .tabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--border); }
+  .shot .tab { padding: 6px 12px; border-radius: 7px 7px 0 0; color: var(--muted); }
+  .shot .tab.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .shot .body { display: grid; grid-template-columns: 1.25fr 1fr; min-height: 260px; }
+  .shot .list { border-right: 1px solid var(--border); }
+  .shot .lrow { display: grid; grid-template-columns: 1fr 74px 62px 62px; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); align-items: center; }
+  .shot .lrow.head { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .shot .nm { display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
+  .shot .sz { text-align: right; font-variant-numeric: tabular-nums; }
+  .shot .bar-mini { height: 5px; border-radius: 3px; background: var(--accent); opacity: .8; }
+  .map { position: relative; margin: 8px; }
+  .map div { position: absolute; border-radius: 4px; padding: 5px 7px; color: #fff; font-size: 10.5px; overflow: hidden; line-height: 1.25; }
+  .shot .status { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface-2); }
+  .gauge { flex: 1; height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; display: flex; max-width: 260px; }
+  .gauge i { display: block; height: 100%; }
+  .reclaim { margin-left: auto; text-align: right; }
+  .reclaim b { color: var(--safe); font-size: 15px; }
+  @media (max-width: 820px) { .shot .body { grid-template-columns: 1fr; } .map { min-height: 200px; } }
+
+  /* ---------- layout helpers ---------- */
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin-top: 32px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; padding: 20px 22px; }
+  .card h3 { margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 14.5px; margin: 0; }
+  .card .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); display: block; margin-bottom: 8px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 26px 0 10px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); font-weight: 600; }
+  td strong { white-space: nowrap; }
+  .tbl-wrap { overflow-x: auto; }
+
+  pre {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 11px;
+    padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; }
+
+  .callout { border-left: 3px solid var(--warn); background: var(--surface); border-radius: 0 11px 11px 0; padding: 18px 22px; margin: 24px 0; }
+  .callout h3 { margin-bottom: 6px; }
+  .callout.blue { border-left-color: var(--accent); }
+  ol.steps { padding-left: 22px; color: var(--muted); }
+  ol.steps li { margin-bottom: 8px; }
+  ol.steps strong { color: var(--text); }
+
+  footer { padding: 44px 0 64px; color: var(--faint); font-size: 13.5px; border-top: 1px solid var(--border); }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <img src="icon.png" alt="">
+    <strong>Disk Manager</strong>
+    <nav>
+      <a href="#how" class="hide-sm">How it works</a>
+      <a href="#removing" class="hide-sm">Removing things</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/rohitshidid/Disk-manager">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap hero">
+  <h1>See where your disk went,<br>and take it back.</h1>
+  <p class="lede">
+    A visual disk-usage explorer for macOS that deletes <em>reversibly</em>.
+    Nothing is erased unless you ask for it in as many words — everything else
+    is a rename you can undo, tomorrow as easily as now.
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/rohitshidid/Disk-manager/releases/latest/download/DiskManager-arm64.dmg">
+      ↓ Download for macOS
+    </a>
+    <a class="btn ghost" href="https://github.com/rohitshidid/Disk-manager">View the source</a>
+  </div>
+  <p class="sub">
+    Apple silicon · macOS 11+ · unsigned, so the first launch needs a right-click → Open
+    (<a href="#install">how</a>) · nothing else to install
+  </p>
+
+  <!-- A rendering of the app's Explore tab: the same columns, tabs and status
+       bar the real window has. It is a drawing, not a screenshot. -->
+  <div class="shot" role="img" aria-label="A rendering of the Disk Manager window: a sortable list of folders beside a treemap, with a status bar showing 314 GB used, 114 GB free, and 12.1 GB waiting in the bin.">
+    <div class="chrome"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="tabs">
+      <span class="tab on">Explore</span><span class="tab">Junk finder</span>
+      <span class="tab">Duplicates</span><span class="tab">Bin&nbsp;·&nbsp;7</span>
+    </div>
+    <div class="body">
+      <div class="list">
+        <div class="lrow head"><span>Name</span><span class="sz">Size</span><span class="sz">Items</span><span class="sz">Modified</span></div>
+        <div class="lrow"><span class="nm">▸ Library</span><span class="sz">88.4 GB</span><span class="sz">1.1M</span><span class="sz">today</span></div>
+        <div class="lrow"><span class="nm">▸ Documents</span><span class="sz">41.2 GB</span><span class="sz">318K</span><span class="sz">2d ago</span></div>
+        <div class="lrow"><span class="nm">▸ Downloads</span><span class="sz">22.7 GB</span><span class="sz">4,102</span><span class="sz">8mo ago</span></div>
+        <div class="lrow"><span class="nm">▸ Movies</span><span class="sz">14.9 GB</span><span class="sz">211</span><span class="sz">1y ago</span></div>
+        <div class="lrow"><span class="nm">▸ Projects</span><span class="sz">9.8 GB</span><span class="sz">846K</span><span class="sz">today</span></div>
+        <div class="lrow"><span class="nm">· archive.zip</span><span class="sz">3.1 GB</span><span class="sz"></span><span class="sz">3y ago</span></div>
+        <div class="lrow" style="border-bottom:0"><span class="bar-mini" style="width:70%"></span><span class="sz"></span><span class="sz"></span><span class="sz"></span></div>
+      </div>
+      <div class="map">
+        <div style="left:0;top:0;width:56%;height:58%;background:#4c78a8">Library<br>88.4 GB</div>
+        <div style="left:57%;top:0;width:43%;height:34%;background:#72b7b2">Documents<br>41.2 GB</div>
+        <div style="left:57%;top:35%;width:43%;height:23%;background:#54a24b">Downloads<br>22.7 GB</div>
+        <div style="left:0;top:59%;width:34%;height:41%;background:#eeca3b;color:#1c222d">Movies<br>14.9 GB</div>
+        <div style="left:35%;top:59%;width:30%;height:41%;background:#f58518">Projects<br>9.8 GB</div>
+        <div style="left:66%;top:59%;width:34%;height:41%;background:#e45756">archive.zip<br>3.1 GB</div>
+      </div>
+    </div>
+    <div class="status">
+      <span><strong>314 GB</strong> used · 114 GB free</span>
+      <span class="gauge"><i style="width:69%;background:var(--accent)"></i><i style="width:4%;background:var(--safe)"></i></span>
+      <span style="color:var(--safe);font-weight:600">→ 126 GB free after purge</span>
+      <span class="reclaim"><b>12.1 GB</b><br><span style="color:var(--faint);font-size:11px">7 items in bin</span></span>
+    </div>
+  </div>
+</div>
+
+<section id="how">
+  <div class="wrap">
+    <h2>It measures the volume your files are actually on</h2>
+    <p class="lede">
+      On modern macOS, <code>/</code> is a sealed, read-only system volume holding
+      about 12 GB. Your real data — the other few hundred gigabytes — lives on a
+      separate APFS volume mounted at <code>/System/Volumes/Data</code> and shown
+      back to you at <code>/Users</code> and <code>/Applications</code> through
+      firmlinks.
+    </p>
+    <p class="lede">
+      So the usual <code>sudo du -x /</code> incantation measures 12 GB of files
+      you are not allowed to touch and stops at the boundary of everything you
+      care about. Disk Manager scans the data volume and then shows you the paths
+      you recognise: <code>/Users/you/Downloads</code>, not
+      <code>/System/Volumes/Data/Users/you/Downloads</code>.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <span class="tag">Explore</span>
+        <h3>List and treemap, together</h3>
+        <p>Sort by any column. Dates roll up: a folder reports the newest change <em>anywhere inside it</em>, not the day its own entry list last shifted — which is what anyone actually means by asking when it changed.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Junk finder</span>
+        <h3>The known space sinks</h3>
+        <p><code>node_modules</code>, Xcode DerivedData and DeviceSupport, simulator devices, <code>.venv</code>, <code>__pycache__</code>, every package-manager cache, iOS backups, Docker images. Each labelled safe, caution or danger, with what regenerating it costs.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Duplicates</span>
+        <h3>Byte-identical copies</h3>
+        <p>Grouped by size first, then a 64 KB head hash, then a full hash only for what still collides — so a same-size-but-different file is rejected after one small read. One click keeps the oldest of every set and trashes the rest.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Bin</span>
+        <h3>An undo that outlives the app</h3>
+        <p>Deleted items sit in a quarantine folder with their original paths recorded on disk. Close the app, come back tomorrow, press <kbd>⌘Z</kbd> — the 107-folder batch you binned comes back as one step.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="removing">
+  <div class="wrap">
+    <h2>Three ways to remove something</h2>
+    <p class="lede">They differ only in who ends up holding the file. Only the third one unlinks anything, and it is gated behind typing <code>DELETE</code>.</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Action</th><th>Where it goes</th><th>How to get it back</th><th>When the space returns</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Move to bin</strong></td>
+            <td>this app's quarantine, on the same volume</td>
+            <td><kbd>⌘Z</kbd>, or Restore in the Bin tab</td>
+            <td>on Purge</td>
+          </tr>
+          <tr>
+            <td><strong>Move to Trash</strong></td>
+            <td>the macOS Trash</td>
+            <td>Finder's “Put Back”</td>
+            <td>when you empty the Trash</td>
+          </tr>
+          <tr>
+            <td><strong>Delete permanently</strong></td>
+            <td>nowhere</td>
+            <td>you don't</td>
+            <td>immediately</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="lede" style="margin-top:22px">
+      “Move to bin” never unlinks: the item is <em>renamed</em> into a quarantine
+      folder on the same volume. A rename within one volume is instant no matter
+      how large the folder is, and it is exactly reversible. The status bar
+      always shows what a purge would free and what your free space would become,
+      which is the loop the whole app is built around — bin things as you find
+      them, watch the number climb, purge once when it is worth it.
+    </p>
+
+    <div class="callout blue">
+      <h3>Guardrails, not nags</h3>
+      <p style="margin:0;color:var(--muted)">
+        A blocklist refuses deletion outright inside SIP-protected trees, at volume roots, at your home
+        directory itself, and anywhere inside the app's own quarantine. Beyond that: over 1 GB or 10,000
+        files asks for confirmation; anything outside <code>/Users</code> also makes you type
+        <code>DELETE</code>. Deletes that need root trigger one native admin prompt per batch — never one
+        per file — and the server itself never runs as root.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Installing</h2>
+    <ol class="steps">
+      <li><strong>Download the DMG</strong> and drag <strong>Disk Manager</strong> into Applications.</li>
+      <li><strong>Right-click it → Open → Open.</strong> The app is not signed by an identified developer, so a plain double-click is refused the first time. You only do this once.</li>
+      <li><strong>Grant Full Disk Access before your first scan</strong> — System Settings → Privacy &amp; Security → Full Disk Access → add Disk Manager. Then quit and reopen it: the consent only applies to freshly launched processes.</li>
+    </ol>
+
+    <div class="callout">
+      <h3>Why that third step is not optional</h3>
+      <p style="margin:0;color:var(--muted)">
+        macOS gates <code>~/Desktop</code>, <code>~/Documents</code>,
+        <code>~/Downloads</code>, <code>~/Music</code>, <code>~/Pictures</code>,
+        <code>~/Movies</code>, iCloud Drive and every app container behind separate
+        privacy consents. A process without consent does not get a permission
+        error when it opens one of those — the call <em>blocks, waiting for a
+        prompt a background process never gets to show.</em> It waits forever, and
+        <code>sudo</code> does not help, because this is consent rather than
+        permission.
+      </p>
+      <p style="margin:12px 0 0;color:var(--muted)">
+        Disk Manager survives that anyway: it watches for a scan that has stopped
+        making progress, works out which folder is responsible, confirms it before
+        blaming it, and offers to skip it or to open the right settings pane. But
+        a skipped folder is simply missing from your totals, so granting access is
+        the better fix.
+      </p>
+    </div>
+
+    <h3 style="margin-top:36px">Or run it from source</h3>
+    <p style="color:var(--muted)">No dependencies to install — Node 20+ and <code>ncdu</code>.</p>
+<pre><code>brew install ncdu
+git clone https://github.com/rohitshidid/Disk-manager.git
+cd Disk-manager
+npm start          # then open http://127.0.0.1:4173</code></pre>
+    <p style="color:var(--muted)">
+      Run this way, Full Disk Access attaches to whichever <em>terminal app</em>
+      launched it, not to Disk Manager — which is the single most confusing thing
+      about the source version, and the main reason the packaged app exists.
+    </p>
+
+    <h3 style="margin-top:36px">Build the DMG yourself</h3>
+<pre><code>npm install
+npm run dist       # → release/DiskManager-arm64.dmg</code></pre>
+    <p style="color:var(--muted)">
+      That vendors <code>ncdu</code> and its two dylibs into the bundle, draws the
+      icon, packages with Electron and ad-hoc signs the result.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Built to be honest about what it does not know</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>1.35M files in 41 MB</h3>
+        <p>The filesystem is held as parallel typed arrays rather than one object per file, which would be gigabytes. Reopening reloads a cached scan in about two seconds.</p>
+      </div>
+      <div class="card">
+        <h3>Sizes match <code>df</code></h3>
+        <p>Disk usage, not apparent size. Hardlinked files are counted once. A subtree too large to finish measuring is marked <code>~</code> rather than quietly guessing.</p>
+      </div>
+      <div class="card">
+        <h3>Nothing leaves your Mac</h3>
+        <p>The server binds to <code>127.0.0.1</code> only, requires a per-run token on every call, and rejects requests whose <code>Host</code> header is not localhost. There is no telemetry and no network use at all.</p>
+      </div>
+      <div class="card">
+        <h3>Refresh one folder</h3>
+        <p>Re-measure the folder you are looking at instead of the whole volume — seconds instead of minutes — and every ancestor total, the treemap and the free-space projection stay correct.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p style="margin:0">
+      MIT licensed · <a href="https://github.com/rohitshidid/Disk-manager">github.com/rohitshidid/Disk-manager</a>
+      · <a href="https://github.com/rohitshidid/Disk-manager/issues">Report an issue</a>
+    </p>
+    <p style="margin:8px 0 0">
+      The download is unsigned and un-notarized. If that is not acceptable in your
+      environment, build it from source — it is a few hundred lines of Node and
+      one page of vanilla JavaScript, and you can read all of it.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

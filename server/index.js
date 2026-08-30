@@ -4,16 +4,17 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { Scanner, ncduOpenDir, findBlockedChild, isPrivacyProtected, surveyBlockers } from './scanner.js';
+import { FolderRefresher } from './refresh.js';
 import { Quarantine } from './quarantine.js';
 import { DupeFinder } from './dupes.js';
 import { trashMany, eraseMany, USER_TRASH } from './dispose.js';
 import { findJunk } from './junk.js';
 import { assess } from './safety.js';
 import { F_ERR } from './tree.js';
-import { DATA_VOLUME, HOME, APP_DIR, canonical, underDataVolume, diskUsage, formatBytes, nowIso, QUARANTINE_DIR } from './util.js';
+import { DATA_VOLUME, HOME, APP_DIR, canonical, underDataVolume, diskUsage, execFileAsync, formatBytes, nowIso, QUARANTINE_DIR } from './util.js';
 
 /** Folders the user chose to skip because a scan wedged inside them. macOS
  *  can block openat() indefinitely on a cache whose provider is unresponsive,
@@ -80,12 +81,21 @@ const TOKEN = crypto.randomBytes(24).toString('hex');
 
 const scanner = new Scanner();
 const dupes = new DupeFinder();
+const refresher = new FolderRefresher();
 const quarantine = await new Quarantine().init();
 const markedNodes = new Set();
-/** Nodes whose file is gone for good as far as this app is concerned -- moved
- *  to the macOS Trash or erased outright. Unlike quarantined nodes these can
- *  never come back on their own, so syncTree() must not un-mark them. */
-const goneNodes = new Set();
+/**
+ * Paths whose file is gone for good as far as this app is concerned -- moved
+ * to the macOS Trash or erased outright. Unlike quarantined items these can
+ * never come back on their own, so syncTree() must not un-mark them.
+ *
+ * Paths rather than node indices, because a per-folder refresh appends the
+ * newly measured nodes and detaches the old ones: an index taken before it
+ * would afterwards address a stale branch, and the subtraction would be
+ * applied to a part of the tree nobody can see. A path survives the splice,
+ * and resolving it again is one cached lookup.
+ */
+const gonePaths = new Set();
 /**
  * What this run has handed to the macOS Trash.
  *
@@ -100,7 +110,6 @@ function recordTrashed(items) {
   if (trashedThisRun.length > 500) trashedThisRun.length = 500;
 }
 
-let scanPromise = null;
 let lastSweep = [];
 
 const MIME = {
@@ -118,7 +127,11 @@ function json(res, code, body) {
 function syncTree() {
   const tree = scanner.tree;
   if (!tree) return;
-  const desired = new Set(goneNodes);
+  const desired = new Set();
+  for (const p of gonePaths) {
+    const idx = tree.findByPath(p);
+    if (idx > 0) desired.add(idx);
+  }
   for (const e of quarantine.live()) {
     const idx = tree.findByPath(e.realPath);
     if (idx > 0) desired.add(idx);
@@ -135,13 +148,7 @@ function syncTree() {
  *  them. Their bytes are already back -- unlike a quarantined item, there is
  *  nothing left to purge. */
 function markGone(realPaths) {
-  const tree = scanner.tree;
-  if (tree) {
-    for (const p of realPaths) {
-      const idx = tree.findByPath(p);
-      if (idx > 0) goneNodes.add(idx);
-    }
-  }
+  for (const p of realPaths) gonePaths.add(p);
   syncTree();
 }
 
@@ -292,6 +299,7 @@ async function baseState() {
   const q = quarantine.summary();
   return {
     scan: scanner.progress(),
+    refresh: refresher.progress(),
     quarantine: q,
     disk: disk && {
       ...disk,
@@ -305,18 +313,25 @@ async function baseState() {
   };
 }
 
-/** Disk usage of a directory tree, for paths the scan does not know about. */
-function measureDir(p) {
+/**
+ * Disk usage of a directory tree, for paths the scan does not know about.
+ *
+ * Asynchronous on purpose. `du` on a freshly created `node_modules` can take
+ * seconds, and this runs inside a request handler -- a synchronous version
+ * stopped the whole server, including the poll that draws the progress bar,
+ * for exactly as long as the measurement took.
+ */
+async function measureDir(p) {
   try {
-    const out = execFileSync('du', ['-sk', '-x', p], { maxBuffer: 1 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
-    return Number(out.toString().trim().split(/\s+/)[0]) * 1024 || 0;
+    const { stdout } = await execFileAsync('du', ['-sk', '-x', p], { maxBuffer: 1 << 20 });
+    return Number(stdout.trim().split(/\s+/)[0]) * 1024 || 0;
   } catch {
     return 0;
   }
 }
 
 /** Turn the client's list of paths into delete targets with real sizes. */
-function resolveTargets(paths) {
+async function resolveTargets(paths) {
   const tree = scanner.tree;
   const targets = [];
   const unknown = [];
@@ -333,10 +348,11 @@ function resolveTargets(paths) {
       try {
         const st = fs.lstatSync(p);
         const isDir = st.isDirectory();
+        const measured = isDir ? await measureDir(p) : 0;
         targets.push({
           realPath: p,
-          dsize: isDir ? measureDir(p) : st.blocks * 512,
-          asize: isDir ? measureDir(p) : st.size,
+          dsize: isDir ? measured : st.blocks * 512,
+          asize: isDir ? measured : st.size,
           items: 0,
           isDir,
         });
@@ -353,8 +369,8 @@ const routes = {
     if (scanner.status === 'scanning') return json(res, 409, { error: 'A scan is already running.' });
     const root = body.root || DATA_VOLUME;
     markedNodes.clear();
-    goneNodes.clear();
-    scanPromise = scanner
+    gonePaths.clear();
+    scanner
       .start({ root, elevated: !!body.elevated, excludes: loadExcludes() })
       .then(() => { syncTree(); })
       .catch((err) => { scanner.status = 'error'; scanner.error = err.message; });
@@ -363,7 +379,7 @@ const routes = {
 
   'POST /api/scan/cached': async (_req, res) => {
     markedNodes.clear();
-    goneNodes.clear();
+    gonePaths.clear();
     await scanner.loadCached();
     syncTree();
     json(res, 200, await baseState());
@@ -394,8 +410,8 @@ const routes = {
         await new Promise((r) => setTimeout(r, 500));
       }
       markedNodes.clear();
-      goneNodes.clear();
-      scanPromise = scanner
+      gonePaths.clear();
+      scanner
         .start({ root: body.root || DATA_VOLUME, elevated: !!body.elevated, excludes: list })
         .then(() => { syncTree(); })
         .catch((err) => { scanner.status = 'error'; scanner.error = err.message; });
@@ -443,10 +459,81 @@ const routes = {
     json(res, 200, { added, excludes: loadExcludes() });
   },
 
+  /**
+   * Overwrite the skip list.
+   *
+   * Every entry here is a hole in the totals, so this is the one place a user
+   * can see them all and take one back out. `rescan` is offered because a
+   * removed exclude changes nothing until the volume is measured again.
+   */
   'POST /api/excludes': async (req, res, body) => {
-    saveExcludes(Array.isArray(body.excludes) ? body.excludes : []);
-    json(res, 200, { excludes: loadExcludes() });
+    saveExcludes(Array.isArray(body.excludes) ? body.excludes.filter(isSkippable) : []);
+    const list = loadExcludes();
+    if (body.rescan && scanner.status !== 'scanning') {
+      markedNodes.clear();
+      gonePaths.clear();
+      scanner
+        .start({ root: DATA_VOLUME, elevated: !!body.elevated, excludes: list })
+        .then(() => { syncTree(); })
+        .catch((err) => { scanner.status = 'error'; scanner.error = err.message; });
+    }
+    json(res, 200, { excludes: list, rescanning: !!body.rescan });
   },
+
+  /**
+   * Re-measure one folder and splice the result into the live tree.
+   *
+   * The alternative is a full rescan, which on this volume is minutes; a
+   * folder is seconds. Every ancestor total, the treemap and the status bar
+   * still come out right, because `spliceSubtree()` carries the difference up
+   * to the root.
+   */
+  'POST /api/refresh': async (req, res, body) => {
+    const tree = scanner.tree;
+    if (!tree) return json(res, 409, { error: 'Nothing scanned yet.' });
+    if (scanner.status === 'scanning') return json(res, 409, { error: 'A full scan is already running.' });
+    if (refresher.status === 'running') return json(res, 409, { error: 'A refresh is already running.' });
+    const target = body.path;
+    if (typeof target !== 'string' || !target) return json(res, 400, { error: 'No path given.' });
+    const idx = tree.findByPath(target);
+    if (idx < 0) return json(res, 404, { error: `${target} is not in the current scan.` });
+    // Every rejection has to be answered here, before start() is called.
+    // FolderRefresher validates too, but it throws before it has touched its
+    // own state, so a refusal raised in there would leave `progress()`
+    // reporting whatever the *previous* refresh did -- and a client polling
+    // for completion would read that stale `ready` as this refresh finishing.
+    if (idx === 0) return json(res, 400, { error: 'This is the scan root — use Scan disk to measure the whole volume again.' });
+    if (!tree.isDir(idx)) return json(res, 400, { error: 'Only folders can be refreshed.' });
+    // A folder sitting in the bin has had its bytes subtracted from every
+    // ancestor already. Re-measuring it would splice a delta on top of that
+    // subtraction and leave the totals doubly wrong, and the answer would be
+    // meaningless anyway: the folder is not where the user is looking at it.
+    if (tree.isDeleted(idx)) {
+      return json(res, 409, { error: 'That folder is in the bin. Restore it first, or refresh its parent.' });
+    }
+
+    refresher
+      .start(tree, { path: target, elevated: !!body.elevated, excludes: loadExcludes() })
+      .then(() => {
+        // Marks inside the replaced branch are now stale indices; syncTree()
+        // drops them (harmlessly -- a detached node bubbles into nothing) and
+        // re-derives the live ones from the manifest.
+        syncTree();
+      })
+      .catch((err) => {
+        // start() records its own failures; this is the belt-and-braces case
+        // where something threw before it could, so that a poll can never see
+        // an older run's `ready` and call this refresh a success.
+        if (refresher.status !== 'error' && refresher.status !== 'cancelled') {
+          refresher.status = 'error';
+          refresher.error = err.message;
+        }
+      });
+
+    json(res, 202, { ok: true, refresh: refresher.progress() });
+  },
+
+  'POST /api/refresh/cancel': async (_req, res) => { refresher.cancel(); json(res, 200, { ok: true }); },
 
   'GET /api/dir': async (req, res, _b, url) => {
     const tree = scanner.tree;
@@ -491,6 +578,10 @@ const routes = {
 
     const hits = [];
     for (let i = 1; i < tree.n; i++) {
+      // A refresh leaves the branch it replaced in the arrays, unlinked from
+      // the root. Anything walking by index rather than by child links has to
+      // step over it, or the same folder is reported twice at two sizes.
+      if (tree.isStale(i)) continue;
       if (tree.isDeleted(i)) continue;
       if (dirsOnly && !tree.isDir(i)) continue;
       if (tree.subD[i] < minSize) continue;
@@ -524,7 +615,7 @@ const routes = {
   'POST /api/dupes/cancel': async (_req, res) => { dupes.cancel(); json(res, 200, { ok: true }); },
 
   'POST /api/assess': async (req, res, body) => {
-    const { targets, unknown } = resolveTargets(body.paths || []);
+    const { targets, unknown } = await resolveTargets(body.paths || []);
     const verdicts = targets.map((t) => ({
       path: canonical(t.realPath), size: t.dsize, items: t.items,
       ...assess(t.realPath, { size: t.dsize, items: t.items }),
@@ -537,7 +628,7 @@ const routes = {
   },
 
   'POST /api/delete': async (req, res, body) => {
-    const { targets, unknown } = resolveTargets(body.paths || []);
+    const { targets, unknown } = await resolveTargets(body.paths || []);
     const result = await quarantine.deleteMany(targets, { force: !!body.force });
     syncTree();
     json(res, 200, { ...result, rejected: [...result.rejected, ...unknown], state: await baseState() });
@@ -552,7 +643,7 @@ const routes = {
    * bytes are already reclaimed and nothing is added to the purge total.
    */
   'POST /api/trash': async (req, res, body) => {
-    const { targets, unknown } = resolveTargets(body.paths || []);
+    const { targets, unknown } = await resolveTargets(body.paths || []);
     const result = await trashMany(targets, { force: !!body.force });
     markGone(result.moved.map((m) => m.realPath));
     recordTrashed(result.moved);
@@ -564,7 +655,7 @@ const routes = {
 
   /** Erase a batch outright — no Trash, no bin. Irreversible. */
   'POST /api/erase': async (req, res, body) => {
-    const { targets, unknown } = resolveTargets(body.paths || []);
+    const { targets, unknown } = await resolveTargets(body.paths || []);
     const result = await eraseMany(targets, { force: !!body.force });
     markGone(result.erased.map((m) => m.realPath));
     json(res, 200, {
@@ -616,9 +707,24 @@ const routes = {
     json(res, 200, { ok: true });
   },
 
+  /**
+   * Quick Look a path, the way the space bar does in Finder.
+   *
+   * `qlmanage -p` is the supported way in. It is spawned detached and never
+   * awaited: the process lives as long as the preview window does, which is
+   * the user's business, not the request's.
+   */
+  'POST /api/quicklook': async (req, res, body) => {
+    const p = body.path;
+    if (typeof p !== 'string' || !fs.existsSync(p)) return json(res, 404, { error: 'Not found on disk.' });
+    spawn('qlmanage', ['-p', p], { stdio: 'ignore', detached: true }).unref();
+    json(res, 200, { ok: true });
+  },
+
   'POST /api/reveal': async (req, res, body) => {
     const p = body.path;
-    if (typeof p === 'string' && fs.existsSync(p)) spawn('open', ['-R', p], { stdio: 'ignore' }).unref();
+    if (typeof p !== 'string' || !fs.existsSync(p)) return json(res, 404, { error: 'Not found on disk — the scan may be stale.' });
+    spawn('open', ['-R', p], { stdio: 'ignore' }).unref();
     json(res, 200, { ok: true });
   },
 };
@@ -670,6 +776,11 @@ function listen(port, attempt = 0) {
   });
   server.listen(port, '127.0.0.1', async () => {
     const url = `http://127.0.0.1:${port}/`;
+    // The desktop build does not know the port in advance -- the server walks
+    // up from 4173 until it finds a free one -- so it is announced on stdout
+    // in a form a parent process can match. Gated, because a person reading
+    // the terminal should not have to look at it.
+    if (process.env.DM_ANNOUNCE === '1') console.log(`DM_READY ${url}`);
     const q = quarantine.reclaimable();
     console.log(`\n  Disk Manager  →  ${url}\n`);
     console.log(`  scan root      ${DATA_VOLUME}  (the volume holding your real data)`);

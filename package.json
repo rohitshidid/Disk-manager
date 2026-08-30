@@ -1,6 +1,6 @@
 {
   "name": "disk-manager",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Visual disk usage explorer for macOS with reversible deletes",
   "license": "MIT",

@@ -60,6 +60,31 @@ button, input, select { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+
+/*
+ * Room for the window's own furniture.
+ *
+ * The desktop build uses `titleBarStyle: 'hiddenInset'`, which does not give
+ * the window a title bar of its own -- it draws the close/minimise/zoom
+ * buttons directly over the top-left of the page. Without this the traffic
+ * lights sit on top of the logo and the first few letters of the app's name.
+ *
+ * The class is only set when the page is running inside the shell, because in
+ * an ordinary browser tab there is no furniture to avoid and the gap would
+ * just be 78px of dead space.
+ */
+.desktop .topbar { padding-left: 92px; }
+
+/*
+ * ...and, since there is no title bar, something has to be draggable or the
+ * window cannot be moved at all. The bar drags; everything you can click in
+ * it opts back out, or the first press on Undo would start a drag instead.
+ */
+.desktop .topbar { -webkit-app-region: drag; }
+.desktop .topbar button,
+.desktop .topbar input,
+.desktop .topbar select,
+.desktop .topbar a { -webkit-app-region: no-drag; }
 .brand { font-weight: 620; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
 .logo { color: var(--accent); font-size: 18px; }
 .scan-info { color: var(--muted); font-size: 12.5px; }

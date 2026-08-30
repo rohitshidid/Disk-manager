@@ -4,7 +4,7 @@ A visual disk-usage explorer for macOS. It scans the volume your data actually
 lives on, shows where the space went, and lets you delete things **reversibly**
 — nothing is erased unless you ask for it in so many words.
 
-**[Download the app](https://rohitshidid.github.io/Disk-manager/)** ·
+**[Download the app](https://github.com/rohitshidid/Disk-manager/releases/latest/download/DiskManager-arm64.dmg)** ·
 [website](https://rohitshidid.github.io/Disk-manager/) ·
 [architecture](structure.md) · [roadmap](TODO.md)
 

@@ -94,7 +94,10 @@ function createWindow(url) {
       sandbox: true,
     },
   });
-  win.loadURL(url);
+  // The page needs to know it is in the shell rather than a browser tab: the
+  // window has no title bar of its own, so the header has to leave room for
+  // the traffic lights drawn over it.
+  win.loadURL(url + '?shell=desktop');
   // Anything that is not our own page opens in the user's browser rather than
   // in a chromeless Electron window with no address bar.
   win.webContents.setWindowOpenHandler(({ url: target }) => {

@@ -6,6 +6,24 @@
 <title>Disk Manager</title>
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>💾</text></svg>">
+<script>
+  /*
+   * Are we inside the desktop shell, or in a browser tab?
+   *
+   * It matters because the shell hides the window's title bar and draws the
+   * traffic lights over the page, so the header has to leave room for them --
+   * see `.desktop .topbar` in styles.css.
+   *
+   * Inline and in the head on purpose: this has to be decided before the
+   * header is painted, or the app opens with its name under the close button
+   * for a frame. Two signals, because either alone can be wrong -- the query
+   * string is what the shell actually passes, and the user agent covers a
+   * reload that has lost it.
+   */
+  if (location.search.indexOf('shell=desktop') !== -1 || / Electron\//.test(navigator.userAgent)) {
+    document.documentElement.classList.add('desktop');
+  }
+</script>
 </head>
 <body data-token="__TOKEN__">
 

@@ -19,8 +19,8 @@
     "icon": "node build/make-icon.mjs",
     "vendor:ncdu": "node build/bundle-ncdu.mjs",
     "prep": "npm run icon && npm run vendor:ncdu",
-    "dist": "npm run prep && electron-builder --mac dmg",
-    "pack": "npm run prep && electron-builder --mac dir"
+    "dist": "npm run prep && electron-builder --mac dmg --publish never",
+    "pack": "npm run prep && electron-builder --mac dir --publish never"
   },
   "engines": {
     "node": ">=20"

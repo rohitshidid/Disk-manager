@@ -1,22 +1,65 @@
-name: Build and publish the DMG
+name: Release
 
-# Tag a commit to cut a release:
+# Releases are driven by the version in package.json, not by tags you push.
 #
-#   npm version minor && git push --follow-tags
+# Every push to main is checked: if `v<version>` has no tag yet, that is a new
+# version, so it gets tagged, built and published. If the tag already exists,
+# nothing happens. Push as often as you like — a README fix does not cost a
+# 121 MB build, and a version bump cannot be forgotten about.
 #
-# The website's Download button points at this repository's *latest* release
-# asset, so publishing here is what updates the download — the site itself does
-# not need to be touched.
+# The consequence worth knowing: the *tag* is created by this workflow, not
+# locally. Bumping the version is the whole act of releasing, wherever you do
+# it — `./release.sh`, an editor, or GitHub's own web UI.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and republish even if the tag already exists'
+        type: boolean
+        default: false
 
 permissions:
-  contents: write        # needed to create the release and attach the DMG
+  contents: write        # needed to create the tag, the release and its asset
+
+concurrency:
+  # Two pushes in quick succession must not race to create the same tag.
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  dmg:
+  check:
+    name: Is this a new version?
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.decide.outputs.version }}
+      should_release: ${{ steps.decide.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # tags are the whole question here
+
+      - id: decide
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Forced rebuild of v$VERSION."
+          elif git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$VERSION is already released. Bump the version in package.json to publish a new one."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$VERSION has no tag yet — building and publishing it."
+          fi
+
+  release:
+    name: Build and publish the DMG
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     # An Apple-silicon runner, because the DMG bundles an arm64 ncdu taken from
     # this machine's Homebrew. Building on an Intel runner would produce a DMG
     # whose scanner cannot run on the machines it is aimed at.
@@ -48,9 +91,9 @@ jobs:
           # Ad-hoc is all an unsigned build gets, but it has to verify: an
           # arm64 bundle whose signature does not check out will not launch.
           codesign --verify --deep --strict "$APP"
-          # And ncdu has to run without Homebrew present, which is the whole
+          # And ncdu has to run without Homebrew on PATH, which is the whole
           # point of vendoring it.
-          "$APP/Contents/Resources/bin/ncdu" --version
+          env -i "$PWD/$APP/Contents/Resources/bin/ncdu" --version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -58,11 +101,13 @@ jobs:
           path: release/*.dmg
 
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.dmg
+          # The tag is created here, at this commit, by this step.
+          tag_name: v${{ needs.check.outputs.version }}
+          name: Disk Manager ${{ needs.check.outputs.version }}
           generate_release_notes: true
+          files: release/*.dmg
           body: |
             **Apple silicon (arm64), unsigned.**
 
@@ -72,5 +117,7 @@ jobs:
 
             Nothing needs to be installed first — Node and `ncdu` are inside the
             bundle. Grant **Full Disk Access** to Disk Manager before the first
-            scan, or macOS will hang the scan on folders it is withholding
-            consent for.
+            scan, then quit and reopen it: macOS only applies a new consent to
+            freshly launched processes.
+
+            ---

@@ -182,8 +182,13 @@ for (const [size, name] of SIZES) {
   fs.writeFileSync(path.join(iconset, name), png(render(size), size));
 }
 // electron-builder wants a 512px PNG alongside the .icns for non-mac targets.
-fs.writeFileSync(path.join(OUT, 'icon.png'), png(render(512), 512));
+// The same file is the favicon for the app's own UI and for the landing page,
+// so the browser tab matches the Dock icon rather than drifting from it.
+const master512 = png(render(512), 512);
+for (const dir of [OUT, path.join(ROOT, 'public'), path.join(ROOT, 'docs')]) {
+  fs.writeFileSync(path.join(dir, 'icon.png'), master512);
+}
 
 execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(OUT, 'icon.icns')]);
 fs.rmSync(iconset, { recursive: true, force: true });
-console.log('wrote build/icon.icns and build/icon.png');
+console.log('wrote build/icon.icns and icon.png into build/, public/, docs/');

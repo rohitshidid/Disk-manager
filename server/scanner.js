@@ -195,6 +195,88 @@ function findNcdu() {
 }
 export const NCDU = findNcdu();
 
+/** ncdu's command line. `-x` stays on one filesystem, `-e` records mtimes and
+ *  read errors, `-0` keeps it quiet while it walks. */
+export function ncduArgs({ root, outFile, excludes = [] }) {
+  const args = ['-x', '-e', '-0'];
+  for (const pattern of excludes) args.push('--exclude', pattern);
+  args.push('-o', outFile, root);
+  return args;
+}
+
+/**
+ * Wrap ncdu in a shell loop that polls for a cancel sentinel.
+ *
+ * A root-owned ncdu cannot be signalled by this process, so Cancel is a file
+ * the wrapper watches for rather than a signal we send. The same wrapper runs
+ * for the unprivileged case, so there is only one code path to reason about.
+ */
+export function cancelWrapper(args, cancelFile) {
+  return [
+    `${shQuote(NCDU)} ${args.map(shQuote).join(' ')} &`,
+    'NCPID=$!',
+    `while kill -0 "$NCPID" 2>/dev/null; do`,
+    `  if [ -f ${shQuote(cancelFile)} ]; then kill -TERM "$NCPID" 2>/dev/null || true; fi`,
+    '  sleep 1',
+    'done',
+    'wait "$NCPID" 2>/dev/null || true',
+    'exit 0',
+  ].join('\n');
+}
+
+/**
+ * Start ncdu and resolve when it has finished, elevated or not.
+ *
+ * ncdu exits non-zero whenever it met a directory it could not read, which on
+ * any real Mac is most runs. The export is still complete and usable, so only
+ * a missing export file is treated as a failure.
+ */
+export function runNcdu({ args, outFile, cancelFile, elevated = false, prompt, onChild }) {
+  if (elevated) return runElevated(cancelWrapper(args, cancelFile), { prompt });
+  return new Promise((resolve, reject) => {
+    const child = spawn(NCDU, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    onChild?.(child);
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      onChild?.(null);
+      if (code !== 0 && !fs.existsSync(outFile)) reject(new Error(stderr.trim() || `ncdu exited with ${code}`));
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Read newly-appended bytes of an export into the parser until `isDone()`.
+ *
+ * The export is tailed rather than piped because an elevated child cannot
+ * stream through a pipe we own, and one code path then serves both cases.
+ * `onGrow` fires on every read that returned bytes -- that, not the item
+ * counter, is the liveness signal a stall detector wants.
+ */
+export async function tailExport(file, parser, isDone, { finalOnly = false, onGrow } = {}) {
+  let offset = parser._tailOffset ?? 0;
+  const buf = Buffer.allocUnsafe(1 << 20);
+  for (;;) {
+    let fh;
+    try { fh = await fsp.open(file, 'r'); } catch { if (isDone()) break; await sleep(200); continue; }
+    try {
+      for (;;) {
+        const { bytesRead } = await fh.read(buf, 0, buf.length, offset);
+        if (bytesRead <= 0) break;
+        offset += bytesRead;
+        onGrow?.();
+        parser.write(Buffer.from(buf.subarray(0, bytesRead)));
+      }
+    } finally { await fh.close(); }
+    parser._tailOffset = offset;
+    if (finalOnly || isDone()) break;
+    await sleep(200);
+  }
+  parser._tailOffset = offset;
+}
+
 /**
  * Runs ncdu and stream-parses its export while it is still being written.
  *
@@ -287,41 +369,12 @@ export class Scanner {
     // ncdu opens with O_TRUNC, which keeps the existing mode.
     await fsp.writeFile(LAST_SCAN_PATH, '', { mode: 0o666 });
 
-    const args = ['-x', '-e', '-0'];
-    for (const pattern of excludes) args.push('--exclude', pattern);
-    args.push('-o', LAST_SCAN_PATH, root);
-
-    // Run ncdu in the background and poll the sentinel, so Cancel works even
-    // when the scan is running as root and we cannot signal it ourselves.
-    const wrapper = [
-      `${shQuote(NCDU)} ${args.map(shQuote).join(' ')} &`,
-      'NCPID=$!',
-      `while kill -0 "$NCPID" 2>/dev/null; do`,
-      `  if [ -f ${shQuote(CANCEL_FILE)} ]; then kill -TERM "$NCPID" 2>/dev/null || true; fi`,
-      '  sleep 1',
-      'done',
-      'wait "$NCPID" 2>/dev/null || true',
-      'exit 0',
-    ].join('\n');
-
-    const run = elevated
-      ? runElevated(wrapper, {
-          prompt: `Disk Manager needs administrator access to scan ${root} completely. Without it, folders owned by other users or by the system are skipped.`,
-        })
-      : new Promise((resolve, reject) => {
-          const child = spawn(NCDU, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-          this._child = child;
-          let stderr = '';
-          child.stderr.on('data', (d) => { stderr += d; });
-          child.on('error', reject);
-          child.on('close', (code) => {
-            this._child = null;
-            // ncdu exits non-zero when it hit unreadable dirs; the export is
-            // still complete and usable, so only a missing file is fatal.
-            if (code !== 0 && !fs.existsSync(LAST_SCAN_PATH)) reject(new Error(stderr.trim() || `ncdu exited with ${code}`));
-            else resolve();
-          });
-        });
+    const args = ncduArgs({ root, outFile: LAST_SCAN_PATH, excludes });
+    const run = runNcdu({
+      args, outFile: LAST_SCAN_PATH, cancelFile: CANCEL_FILE, elevated,
+      prompt: `Disk Manager needs administrator access to scan ${root} completely. Without it, folders owned by other users or by the system are skipped.`,
+      onChild: (c) => { this._child = c; },
+    });
 
     const tree = new TreeStore(1 << 18);
     const parser = new NcduParser(tree, {
@@ -359,30 +412,15 @@ export class Scanner {
     return this.progress();
   }
 
-  /** Read newly-appended bytes into the parser until `isDone()` says stop. */
-  async _tail(file, parser, isDone, finalOnly = false) {
-    let offset = parser._tailOffset ?? 0;
-    const buf = Buffer.allocUnsafe(1 << 20);
-    for (;;) {
-      let fh;
-      try { fh = await fsp.open(file, 'r'); } catch { if (isDone()) break; await sleep(200); continue; }
-      try {
-        for (;;) {
-          const { bytesRead } = await fh.read(buf, 0, buf.length, offset);
-          if (bytesRead <= 0) break;
-          offset += bytesRead;
-          // Any growth in the export means ncdu is still walking. This is the
-          // real liveness signal: the item counter only ticks every 20k items,
-          // so a slow region of large files would otherwise look like a block.
-          this._lastChangeAt = Date.now();
-          parser.write(Buffer.from(buf.subarray(0, bytesRead)));
-        }
-      } finally { await fh.close(); }
-      parser._tailOffset = offset;
-      if (finalOnly || isDone()) break;
-      await sleep(200);
-    }
-    parser._tailOffset = offset;
+  /** Tail the export, treating any growth in it as proof the scan is alive.
+   *  That is the real liveness signal: the item counter only ticks every 20k
+   *  items, so a slow region of very large files would otherwise be
+   *  indistinguishable from a folder that blocks forever. */
+  _tail(file, parser, isDone, finalOnly = false) {
+    return tailExport(file, parser, isDone, {
+      finalOnly,
+      onGrow: () => { this._lastChangeAt = Date.now(); },
+    });
   }
 
   /** Re-parse the export from the previous run -- far faster than rescanning. */

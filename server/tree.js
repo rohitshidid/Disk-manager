@@ -6,6 +6,11 @@ export const F_ERR      = 2;   // ncdu could not read it (permissions)
 export const F_HLDUP    = 4;   // hardlink we've already counted elsewhere
 export const F_DELETED  = 8;   // quarantined during this session
 export const F_NOTREG   = 16;  // socket / fifo / device
+// Detached by a per-folder refresh. Typed arrays cannot be compacted without
+// renumbering every index, and half the app holds indices, so a replaced
+// subtree is unlinked and flagged rather than removed. Nothing reachable from
+// the root is stale; only whole-tree walks need to skip these.
+export const F_STALE    = 32;
 
 const MAX_NODES = 12_000_000;
 
@@ -129,6 +134,9 @@ export class TreeStore {
 
   isDir(i) { return i >= 0 && (this.flags[i] & F_DIR) !== 0; }
   isDeleted(i) { return i >= 0 && (this.flags[i] & F_DELETED) !== 0; }
+  /** Left over from a refresh: unreachable from the root, and to be skipped by
+   *  anything that walks the arrays by index rather than by child links. */
+  isStale(i) { return i >= 0 && (this.flags[i] & F_STALE) !== 0; }
 
   /** Roll subtree totals up into every ancestor. Children always have a
    *  higher index than their parent, so one reverse pass is enough. */
@@ -215,6 +223,125 @@ export class TreeStore {
     const d = this.subD[i], a = this.subA[i], items = this.subItems[i] + 1;
     if (deleted) { this.flags[i] |= F_DELETED; this.bubble(i, -d, -a, -items); }
     else { this.flags[i] &= ~F_DELETED; this.bubble(i, d, a, items); }
+  }
+
+  /** Take a node out of its parent's child list. The node keeps its own
+   *  children, so the whole branch comes away in one piece. */
+  _unlink(i) {
+    const p = this.parent[i];
+    if (p < 0) return;
+    let prev = -1;
+    for (let c = this.firstChild[p]; c !== -1; c = this.nextSib[c]) {
+      if (c === i) break;
+      prev = c;
+    }
+    if (prev === -1) this.firstChild[p] = this.nextSib[i];
+    else this.nextSib[prev] = this.nextSib[i];
+    if (this.lastChild[p] === i) this.lastChild[p] = prev;
+    if (this.childCount[p] > 0) this.childCount[p]--;
+    this.parent[i] = -1;
+    this.nextSib[i] = -1;
+  }
+
+  /** Flag a detached branch, and hand back the read errors it was contributing
+   *  so the scan summary does not count them twice after a refresh. */
+  _flagStale(root) {
+    let errors = 0;
+    const stack = [root];
+    while (stack.length) {
+      const i = stack.pop();
+      if (this.flags[i] & F_STALE) continue;
+      this.flags[i] |= F_STALE;
+      if (this.flags[i] & F_ERR) errors++;
+      for (let c = this.firstChild[i]; c !== -1; c = this.nextSib[c]) stack.push(c);
+    }
+    this.readErrors = Math.max(0, this.readErrors - errors);
+    return errors;
+  }
+
+  /**
+   * Swap the subtree at `idx` for a freshly scanned one.
+   *
+   * `sub` is a TreeStore of its own, rooted at the same folder and already
+   * aggregated. Its nodes are appended here rather than written over the old
+   * ones, which is what keeps the invariant every other method rests on: a
+   * child always sits at a higher index than its parent, so `aggregate()` and
+   * the mtime rollup stay single reverse passes. `sub` is walked in index
+   * order, so each node's parent has already been mapped by the time it is
+   * needed.
+   *
+   * The old nodes are detached and flagged `F_STALE`, not removed -- see the
+   * flag's comment. They are reclaimed by the next full scan.
+   *
+   * Returns the new index of the refreshed folder, or -1 if it could not be
+   * spliced (the scan root, or a tree that would overflow).
+   */
+  spliceSubtree(idx, sub) {
+    if (!(idx > 0 && idx < this.n) || !sub || !sub.n) return -1;
+    const parent = this.parent[idx];
+    if (parent < 0) return -1;
+    if (this.n + sub.n > MAX_NODES) { this.truncated = true; return -1; }
+
+    const oldD = this.subD[idx];
+    const oldA = this.subA[idx];
+    const oldItems = this.subItems[idx] + 1;
+    const wasDeleted = this.isDeleted(idx);
+
+    this._unlink(idx);
+    this._flagStale(idx);
+
+    // The folder keeps the name it already had: ncdu's root record carries the
+    // path it was handed, not the basename.
+    const keptName = this.name(idx);
+    const map = new Int32Array(sub.n);
+    for (let i = 0; i < sub.n; i++) {
+      const p = i === 0 ? parent : map[sub.parent[i]];
+      const ni = this.add(
+        p,
+        i === 0 ? keptName : sub.name(i),
+        sub.flags[i] & ~(F_DELETED | F_STALE),
+        sub.ownD[i], sub.ownA[i], sub.mtime[i],
+      );
+      if (ni === -1) { this.truncated = true; return -1; }
+      map[i] = ni;
+    }
+    const newIdx = map[0];
+
+    // Total the appended range on its own. Every node in it has its parent in
+    // the same range except newIdx, whose parent is the live tree above.
+    for (let i = this.n - 1; i > newIdx; i--) {
+      const p = this.parent[i];
+      this.subD[p] += this.subD[i];
+      this.subA[p] += this.subA[i];
+      this.subItems[p] += this.subItems[i] + 1;
+      if (this.subMtime[i] > this.subMtime[p]) this.subMtime[p] = this.subMtime[i];
+    }
+
+    // A folder that was in the bin when the refresh ran is on disk again only
+    // if the user restored it; either way the fresh measurement is the truth,
+    // so the mark is dropped and index.js re-derives it from the manifest.
+    if (wasDeleted) this.flags[newIdx] &= ~F_DELETED;
+
+    this.bubble(newIdx, this.subD[newIdx] - oldD, this.subA[newIdx] - oldA,
+      (this.subItems[newIdx] + 1) - oldItems);
+
+    // Sizes bubble as a delta, but the newest-mtime rollup cannot: if the
+    // newest file under here was deleted, the ancestors' value has to come
+    // down, and a delta has no way to express that. Recomputing each ancestor
+    // from its own children is exact and costs only the fan-out along one
+    // path to the root.
+    for (let cur = this.parent[newIdx]; cur >= 0; cur = this.parent[cur]) {
+      let newest = this.mtime[cur];
+      for (let c = this.firstChild[cur]; c !== -1; c = this.nextSib[c]) {
+        if (this.subMtime[c] > newest) newest = this.subMtime[c];
+      }
+      this.subMtime[cur] = newest;
+      if (cur === 0) break;
+    }
+
+    // Every cached path under the old branch now points at a detached node.
+    this._pathCache.clear();
+    return newIdx;
   }
 }
 
